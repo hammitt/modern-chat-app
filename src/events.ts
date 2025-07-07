@@ -1,0 +1,22 @@
+export const enum Events {
+    Connect = "connect",
+    Disconnect = "disconnect",
+    Connection = "connection",
+    ChatMessage = "chat message",
+    Typing = "typing",
+    StopTyping = "stop typing",
+    JoinRoom = "join room",
+    JoinedRoom = "joined room",
+    // New events for enhanced features
+    UserMention = "user mention",
+    CreateRoom = "create room",
+    RoomCreated = "room created",
+    GetRooms = "get rooms",
+    RoomsList = "rooms list",
+    UserJoined = "user joined",
+    UserLeft = "user left",
+    GetUsers = "get users",
+    UsersList = "users list",
+    GetUserInfo = "get user info",
+    UserInfo = "user info",
+}

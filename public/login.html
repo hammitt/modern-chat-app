@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat App - Login</title>
+    <link rel="stylesheet" href="theme-dark-blue.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, var(--background-primary), var(--background-secondary));
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-primary);
+        }
+
+        .login-container {
+            background: var(--background-tertiary);
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(10px);
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .login-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin: 0 0 0.5rem 0;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .login-subtitle {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            margin: 0;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        input[type="text"],
+        input[type="email"] {
+            width: 100%;
+            padding: 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            background: var(--background-secondary);
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            box-sizing: border-box;
+        }
+
+        input[type="text"]:focus,
+        input[type="email"]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            background: var(--background-primary);
+            box-shadow: 0 0 0 3px rgba(62, 118, 161, 0.2);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 1rem;
+            background: var(--gradient-primary);
+            border: none;
+            border-radius: 12px;
+            color: white;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(62, 118, 161, 0.3);
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(62, 118, 161, 0.4);
+        }
+
+        .login-btn:active {
+            transform: translateY(0);
+        }
+
+        .login-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .error-message {
+            background: rgba(224, 30, 90, 0.1);
+            border: 1px solid rgba(224, 30, 90, 0.3);
+            color: var(--error-color);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            text-align: center;
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .avatar-section {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .avatar-preview {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: var(--gradient-primary);
+            margin: 0 auto 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            font-weight: bold;
+            color: white;
+            border: 3px solid var(--border-color);
+        }
+
+        .form-helper {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-top: 0.5rem;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                padding: 2rem 1.5rem;
+                margin: 1rem;
+            }
+
+            .form-row {
+                flex-direction: column;
+                gap: 0;
+            }
+
+            .login-title {
+                font-size: 1.6rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1 class="login-title">Join Chat</h1>
+            <p class="login-subtitle">Create your profile to start chatting</p>
+        </div>
+
+        <div class="error-message" id="error-message"></div>
+
+        <form id="login-form">
+            <div class="avatar-section">
+                <div class="avatar-preview" id="avatar-preview">👤</div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="firstName">First Name</label>
+                    <input type="text" id="firstName" name="firstName" required>
+                </div>
+                <div class="form-group">
+                    <label for="lastName">Last Name</label>
+                    <input type="text" id="lastName" name="lastName" required>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required>
+                <div class="form-helper">Choose a unique username for the chat</div>
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email (Optional)</label>
+                <input type="email" id="email" name="email">
+                <div class="form-helper">We'll use this for notifications and password recovery</div>
+            </div>
+
+            <button type="submit" class="login-btn" id="login-btn">
+                Join Chat
+            </button>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('login-form');
+        const firstNameInput = document.getElementById('firstName');
+        const lastNameInput = document.getElementById('lastName');
+        const usernameInput = document.getElementById('username');
+        const emailInput = document.getElementById('email');
+        const avatarPreview = document.getElementById('avatar-preview');
+        const errorMessage = document.getElementById('error-message');
+        const loginBtn = document.getElementById('login-btn');
+
+        // Update avatar preview with initials
+        function updateAvatar() {
+            const firstName = firstNameInput.value.trim();
+            const lastName = lastNameInput.value.trim();
+
+            if (firstName || lastName) {
+                const initials = (firstName.charAt(0) + lastName.charAt(0)).toUpperCase();
+                avatarPreview.textContent = initials || '👤';
+            } else {
+                avatarPreview.textContent = '👤';
+            }
+        }
+
+        // Auto-generate username suggestion
+        function generateUsername() {
+            const firstName = firstNameInput.value.trim().toLowerCase();
+            const lastName = lastNameInput.value.trim().toLowerCase();
+
+            if (firstName && lastName) {
+                const suggestions = [
+                    `${firstName}${lastName}`,
+                    `${firstName}.${lastName}`,
+                    `${firstName}_${lastName}`,
+                    `${firstName}${lastName.charAt(0)}`,
+                    `${firstName.charAt(0)}${lastName}`
+                ];
+
+                // Use the first suggestion if username is empty
+                if (!usernameInput.value.trim()) {
+                    usernameInput.value = suggestions[0];
+                }
+            }
+        }
+
+        // Show error message
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        // Hide error message
+        function hideError() {
+            errorMessage.style.display = 'none';
+        }
+
+        // Validate form
+        function validateForm() {
+            const firstName = firstNameInput.value.trim();
+            const lastName = lastNameInput.value.trim();
+            const username = usernameInput.value.trim();
+
+            if (!firstName) {
+                showError('First name is required');
+                return false;
+            }
+
+            if (!lastName) {
+                showError('Last name is required');
+                return false;
+            }
+
+            if (!username) {
+                showError('Username is required');
+                return false;
+            }
+
+            if (username.length < 3) {
+                showError('Username must be at least 3 characters');
+                return false;
+            }
+
+            if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+                showError('Username can only contain letters, numbers, dots, underscores, and hyphens');
+                return false;
+            }
+
+            return true;
+        }
+
+        // Event listeners
+        firstNameInput.addEventListener('input', () => {
+            updateAvatar();
+            generateUsername();
+            hideError();
+        });
+
+        lastNameInput.addEventListener('input', () => {
+            updateAvatar();
+            generateUsername();
+            hideError();
+        });
+
+        usernameInput.addEventListener('input', hideError);
+
+        // Form submission
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!validateForm()) return;
+
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Joining...';
+
+            try {
+                const formData = {
+                    firstName: firstNameInput.value.trim(),
+                    lastName: lastNameInput.value.trim(),
+                    username: usernameInput.value.trim(),
+                    email: emailInput.value.trim() || undefined
+                };
+
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Store user data in sessionStorage
+                    sessionStorage.setItem('user', JSON.stringify(result.user));
+
+                    // Redirect to chat
+                    window.location.href = '/chat';
+                } else {
+                    showError(result.error || 'Login failed');
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showError('Connection error. Please try again.');
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Join Chat';
+            }
+        });
+
+        // Initialize
+        updateAvatar();
+    </script>
+</body>
+
+</html>
