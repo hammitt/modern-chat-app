@@ -1,7 +1,9 @@
 {
-  "name": "chat-app",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "modern-chat-app",
+  "version": "1.3.0",
+  "description": "A modern real-time chat application with user authentication, file sharing, @mentions, and responsive design built with Node.js, Socket.io, and TypeScript",
+  "type": "module",
+  "main": "dist/server.js",
   "scripts": {
     "build:client": "webpack --mode=development",
     "watch:client": "webpack --mode=development --watch",
@@ -9,12 +11,32 @@
     "start": "node dist/server.js",
     "build": "npm run build:client && npm run build:server",
     "dev": "ts-node src/server.ts",
-    "clean": "rmdir /s /q dist 2>nul || true"
+    "clean": "rmdir /s /q dist 2>nul || true",
+    "lint": "eslint src --ext .ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "keywords": [
+    "chat",
+    "realtime",
+    "socket.io",
+    "typescript",
+    "express",
+    "sqlite",
+    "file-sharing",
+    "mentions",
+    "responsive",
+    "nodejs"
+  ],
+  "author": "Chat App Developer <developer@chatapp.local>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hammitt/modern-chat-app.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hammitt/modern-chat-app/issues"
+  },
+  "homepage": "https://github.com/hammitt/modern-chat-app#readme",
   "dependencies": {
     "@types/express-session": "^1.18.2",
     "express": "^4.18.2",
@@ -22,7 +44,6 @@
     "multer": "^2.0.1",
     "socket.io": "^4.7.2",
     "socket.io-client": "^4.7.2",
-    "socket.io-session": "^0.0.5",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7"
   },

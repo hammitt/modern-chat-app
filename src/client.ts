@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
 import { Events } from './events';
+import type { User, FileUploadResponse, UserSearchResponse, RoomListResponse } from './types/index.js';
 
 const socket = io();
 
@@ -28,24 +29,24 @@ const tabletMenuToggle = document.getElementById('tablet-menu-toggle');
 const sidebar = document.getElementById('sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 const sidebarClose = document.getElementById('sidebar-close');
-const mobileUsersToggle = document.getElementById('mobile-users-toggle');
+const _mobileUsersToggle = document.getElementById('mobile-users-toggle');
 
 let typingTimer: number;
 const TYPING_TIMER_LENGTH = 1500; // ms
 let currentRoom = "General"; // Default room, matches server
-let typingUsers = new Set<string>(); // Track who's typing
+const typingUsers = new Set<string>(); // Track who's typing
 let currentUserName = ""; // Track current user's name for message alignment
 let isTyping = false; // Track if current user is in typing state
 
 // Mention autocomplete variables
-let mentionUsers: any[] = []; // Cache of users for mention autocomplete
+let mentionUsers: User[] = []; // Cache of users for mention autocomplete
 let isMentioning = false; // Track if user is currently typing a mention
 let mentionQuery = ""; // Current mention search query
 let selectedMentionIndex = -1; // Currently selected mention item
 let mentionStartPosition = -1; // Position where mention started
 
 // Authentication and user management
-let currentUser: any = null;
+let currentUser: User | null = null;
 let isAuthenticated = false;
 
 // Check authentication status on page load
@@ -57,11 +58,13 @@ async function checkAuthStatus() {
         if (result.authenticated) {
             currentUser = result.user;
             isAuthenticated = true;
-            currentUserName = currentUser.username;
+            if (currentUser) {
+                currentUserName = currentUser.username;
 
-            // Send login event to socket
-            socket.emit('user_login', { username: currentUser.username });
-            console.log('User authenticated:', currentUser.username);
+                // Send login event to socket
+                socket.emit('user_login', { username: currentUser.username });
+                console.log('User authenticated:', currentUser.username);
+            }
         } else {
             // Redirect to login if not authenticated
             window.location.href = '/login.html';

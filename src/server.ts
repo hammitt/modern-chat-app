@@ -1,13 +1,14 @@
 import express from 'express';
 import http from 'http';
-import { Server, Socket } from 'socket.io';
+import { Server } from 'socket.io';
+import type { Socket } from 'socket.io';
 import path from 'path';
 import multer from 'multer';
 import session from 'express-session';
 import { Events } from './events';
-import { getBotResponse } from './bot';
 import { TEST_USERS, TEST_ROOMS, getBotResponse as getTestBotResponse, getMainBotResponse } from './testEnvironment';
-import { chatDatabase, Message } from './database';
+import { chatDatabase } from './database';
+import type { Message } from './types/index.js';
 
 // Extend session interface to include user data
 declare module 'express-session' {

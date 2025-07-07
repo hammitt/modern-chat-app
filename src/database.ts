@@ -1,40 +1,7 @@
 import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
+import { open, type Database } from 'sqlite';
 import path from 'path';
-
-export interface Message {
-    id?: number;
-    room: string;
-    username: string;
-    content: string;
-    timestamp: string;
-    messageType: 'text' | 'system' | 'file';
-    fileName?: string;
-    fileUrl?: string;
-    fileSize?: number;
-    edited?: boolean;
-    editedAt?: string;
-}
-
-export interface Room {
-    id?: number;
-    name: string;
-    description?: string;
-    createdAt: string;
-    createdBy: string;
-}
-
-export interface User {
-    id?: number;
-    username: string;
-    firstName: string;
-    lastName: string;
-    email?: string;
-    avatar?: string;
-    lastSeen: string;
-    isOnline: boolean;
-    createdAt: string;
-}
+import type { User, Message, Room, UserRowData, MessageRowData, RoomRowData } from './types/index.js';
 
 class ChatDatabase {
     private db: Database | null = null;
@@ -171,7 +138,7 @@ class ChatDatabase {
     async getUserByUsername(username: string): Promise<User | null> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const row = await this.db.get(
+        const row = await this.db.get<UserRowData>(
             'SELECT * FROM users WHERE username = ?',
             [username]
         );
@@ -194,7 +161,7 @@ class ChatDatabase {
     async getAllUsers(): Promise<User[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const rows = await this.db.all('SELECT * FROM users ORDER BY username');
+        const rows = await this.db.all<UserRowData[]>('SELECT * FROM users ORDER BY username');
         return rows.map(row => ({
             id: row.id,
             username: row.username,
@@ -211,7 +178,7 @@ class ChatDatabase {
     async searchUsers(query: string): Promise<User[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const rows = await this.db.all(
+        const rows = await this.db.all<UserRowData[]>(
             `SELECT * FROM users 
              WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?
              ORDER BY username LIMIT 10`,
@@ -279,7 +246,7 @@ class ChatDatabase {
     async getMessages(room: string, limit: number = 50, offset: number = 0): Promise<Message[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        return await this.db.all(
+        return await this.db.all<MessageRowData[]>(
             `SELECT * FROM messages 
              WHERE room = ? 
              ORDER BY timestamp DESC 
@@ -291,7 +258,7 @@ class ChatDatabase {
     async getRecentMessages(room: string, limit: number = 50): Promise<Message[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const messages = await this.db.all(
+        const messages = await this.db.all<MessageRowData[]>(
             `SELECT * FROM messages 
              WHERE room = ? 
              ORDER BY timestamp ASC 
@@ -320,7 +287,7 @@ class ChatDatabase {
     async searchMessages(room: string, query: string, limit: number = 20): Promise<Message[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        return await this.db.all(
+        return await this.db.all<MessageRowData[]>(
             `SELECT * FROM messages 
              WHERE room = ? AND content LIKE ? 
              ORDER BY timestamp DESC 
@@ -333,7 +300,7 @@ class ChatDatabase {
     async getMessageCount(room: string): Promise<number> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const result = await this.db.get(
+        const result = await this.db.get<{ count: number }>(
             'SELECT COUNT(*) as count FROM messages WHERE room = ?',
             [room]
         );
@@ -344,7 +311,7 @@ class ChatDatabase {
     async getUserMessageCount(username: string): Promise<number> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const result = await this.db.get(
+        const result = await this.db.get<{ count: number }>(
             'SELECT COUNT(*) as count FROM messages WHERE username = ?',
             [username]
         );
@@ -387,10 +354,10 @@ class ChatDatabase {
         );
     }
 
-    async getUserRooms(username: string): Promise<any[]> {
+    async getUserRooms(username: string): Promise<RoomRowData[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        return await this.db.all(
+        return await this.db.all<RoomRowData[]>(
             `SELECT r.name, r.description, r.is_public, r.created_by, rm.joined_at, rm.invited_by
              FROM rooms r
              JOIN room_memberships rm ON r.name = rm.room_name
@@ -400,10 +367,10 @@ class ChatDatabase {
         );
     }
 
-    async getPublicRooms(): Promise<any[]> {
+    async getPublicRooms(): Promise<RoomRowData[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        return await this.db.all(
+        return await this.db.all<RoomRowData[]>(
             `SELECT name, description, created_by, created_at,
                     (SELECT COUNT(*) FROM room_memberships WHERE room_name = rooms.name) as member_count
              FROM rooms 
@@ -412,10 +379,10 @@ class ChatDatabase {
         );
     }
 
-    async getRoomMembers(roomName: string): Promise<any[]> {
+    async getRoomMembers(roomName: string): Promise<UserRowData[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        return await this.db.all(
+        return await this.db.all<UserRowData[]>(
             `SELECT u.username, u.first_name, u.last_name, rm.joined_at, rm.invited_by
              FROM users u
              JOIN room_memberships rm ON u.username = rm.username
@@ -428,8 +395,8 @@ class ChatDatabase {
     async isUserInRoom(username: string, roomName: string): Promise<boolean> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const result = await this.db.get(
-            'SELECT 1 FROM room_memberships WHERE username = ? AND room_name = ?',
+        const result = await this.db.get<{ exists: number }>(
+            'SELECT 1 as exists FROM room_memberships WHERE username = ? AND room_name = ?',
             [username, roomName]
         );
 
