@@ -1,5 +1,5 @@
 import { io } from 'socket.io-client';
-import { Events } from './events';
+import { Events } from './events.js';
 import type { User, FileUploadResponse, UserSearchResponse, RoomListResponse } from './types/index.js';
 
 const socket = io();

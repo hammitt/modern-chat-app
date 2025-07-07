@@ -3,11 +3,16 @@ import http from 'http';
 import { Server } from 'socket.io';
 import type { Socket } from 'socket.io';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import multer from 'multer';
 import session from 'express-session';
-import { Events } from './events';
-import { TEST_USERS, TEST_ROOMS, getBotResponse as getTestBotResponse, getMainBotResponse } from './testEnvironment';
-import { chatDatabase } from './database';
+
+// ES module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import { Events } from './events.js';
+import { TEST_USERS, TEST_ROOMS, getBotResponse as getTestBotResponse, getMainBotResponse } from './testEnvironment.js';
+import { chatDatabase } from './database.js';
 import type { Message } from './types/index.js';
 
 // Extend session interface to include user data
