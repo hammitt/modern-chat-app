@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 import { Events } from './events.js';
-import type { User, FileUploadResponse, UserSearchResponse, RoomListResponse } from './types/index.js';
+import type { User, Room } from './types/index.js';
 
 const socket = io();
 
@@ -40,24 +40,24 @@ let isTyping = false; // Track if current user is in typing state
 
 // Mention autocomplete variables
 let mentionUsers: User[] = []; // Cache of users for mention autocomplete
-let isMentioning = false; // Track if user is currently typing a mention
-let mentionQuery = ""; // Current mention search query
+let _isMentioning = false; // Track if user is currently typing a mention
+let _mentionQuery = ""; // Current mention search query
 let selectedMentionIndex = -1; // Currently selected mention item
 let mentionStartPosition = -1; // Position where mention started
 
 // Authentication and user management
 let currentUser: User | null = null;
-let isAuthenticated = false;
+let _isAuthenticated = false;
 
 // Check authentication status on page load
 async function checkAuthStatus() {
     try {
         const response = await fetch('/api/session');
-        const result = await response.json();
+        const result = await response.json() as { authenticated: boolean; user?: User };
 
         if (result.authenticated) {
-            currentUser = result.user;
-            isAuthenticated = true;
+            currentUser = result.user || null;
+            _isAuthenticated = true;
             if (currentUser) {
                 currentUserName = currentUser.username;
 
@@ -192,7 +192,9 @@ function createRoom() {
     const roomName = newRoomInput.value.trim();
 
     // Use the new API-based room creation
-    createNewRoom(roomName);
+    createNewRoom(roomName).catch(error => {
+        console.error('Failed to create room:', error);
+    });
     newRoomInput.value = '';
 }
 
@@ -263,7 +265,10 @@ function handleFileSelect(event: Event) {
     showUploadProgress(file.name);
 
     // Upload file
-    uploadFile(file);
+    uploadFile(file).catch(error => {
+        console.error('File upload failed:', error);
+        removeUploadProgress();
+    });
 
     // Clear input
     target.value = '';
@@ -304,9 +309,13 @@ async function uploadFile(file: File) {
             body: formData
         });
 
-        const result = await response.json();
+        const result = await response.json() as {
+            success: boolean;
+            file?: { filename: string; size: number; mimetype: string; url: string; originalName: string };
+            error?: string;
+        };
 
-        if (result.success) {
+        if (result.success && result.file) {
             // Remove upload progress
             removeUploadProgress();
 
@@ -324,12 +333,21 @@ async function uploadFile(file: File) {
     }
 }
 
-function createFileMessage(originalName: string, fileInfo: any): string {
+function createFileMessage(originalName: string, fileInfo: { filename: string; size: number; mimetype: string }): string {
     // Create a special file message format that the server can recognize
     return `[FILE:${fileInfo.filename}:${originalName}:${fileInfo.size}:${fileInfo.mimetype}]`;
 }
 
-function parseFileMessage(content: string): { isFile: boolean; fileData?: any } {
+function parseFileMessage(content: string): {
+    isFile: boolean;
+    fileData?: {
+        filename: string;
+        originalName: string;
+        size: number;
+        mimetype: string;
+        url: string;
+    }
+} {
     const fileRegex = /\[FILE:([^:]+):([^:]+):(\d+):([^\]]+)\]/;
     const match = content.match(fileRegex);
 
@@ -367,7 +385,13 @@ function isImageFile(mimetype: string): boolean {
     return mimetype.startsWith('image/');
 }
 
-function createFileMessageElement(fileData: any, username: string): HTMLElement {
+function createFileMessageElement(fileData: {
+    filename: string;
+    originalName: string;
+    size: number;
+    mimetype: string;
+    url: string;
+}, _username: string): HTMLElement {
     const fileElement = document.createElement('div');
     fileElement.className = 'file-message';
 
@@ -405,20 +429,20 @@ async function fetchUsers(): Promise<void> {
     try {
         const response = await fetch('/api/users');
         if (response.ok) {
-            mentionUsers = await response.json();
+            mentionUsers = await response.json() as User[];
         }
     } catch (error) {
         console.error('Error fetching users:', error);
     }
 }
 
-async function searchUsers(query: string) {
+async function _searchUsers(query: string): Promise<User[]> {
     try {
         const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; users?: User[]; error?: string };
 
         if (result.success) {
-            return result.users;
+            return result.users || [];
         } else {
             console.error('Error searching users:', result.error);
             return [];
@@ -429,14 +453,14 @@ async function searchUsers(query: string) {
     }
 }
 
-async function getAllUsers() {
+async function getAllUsers(): Promise<User[]> {
     try {
         const response = await fetch('/api/users');
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; users?: User[]; error?: string };
 
         if (result.success) {
-            mentionUsers = result.users;
-            return result.users;
+            mentionUsers = result.users || [];
+            return result.users || [];
         } else {
             console.error('Error getting users:', result.error);
             return [];
@@ -447,7 +471,7 @@ async function getAllUsers() {
     }
 }
 
-function showMentionDropdown(users: any[], query: string) {
+function showMentionDropdown(users: User[], query: string) {
     if (!mentionDropdown || !input) return;
 
     // Filter users based on query
@@ -465,7 +489,7 @@ function showMentionDropdown(users: any[], query: string) {
     mentionDropdown.innerHTML = '';
     selectedMentionIndex = -1;
 
-    filteredUsers.forEach((user, index) => {
+    filteredUsers.forEach((user, _index) => {
         const item = document.createElement('div');
         item.className = 'mention-item';
         item.innerHTML = `
@@ -493,7 +517,7 @@ function hideMentionDropdown() {
         mentionDropdown.style.display = 'none';
         mentionDropdown.innerHTML = '';
     }
-    isMentioning = false;
+    _isMentioning = false;
     selectedMentionIndex = -1;
 }
 
@@ -605,9 +629,9 @@ if (form && input && messages && roomList) {
     });
 
     // Emit a 'typing' event when the user is typing (with throttling)
-    input.addEventListener("input", async () => {
+    input.addEventListener("input", () => {
         // Handle mention autocomplete
-        await handleMentionInput();
+        handleMentionInput().catch(error => console.error('Error handling mention input:', error));
 
         // Clear existing timer
         clearTimeout(typingTimer);
@@ -662,7 +686,7 @@ if (form && input && messages && roomList) {
         // Hide mention dropdown when input loses focus
         setTimeout(() => {
             hideMentionDropdown();
-            isMentioning = false;
+            _isMentioning = false;
         }, 200); // Small delay to allow click events on dropdown items
     });
 
@@ -672,7 +696,7 @@ if (form && input && messages && roomList) {
         // Request user info immediately upon connection
         socket.emit(Events.GetUserInfo);
         // Fetch users for mention autocomplete
-        fetchUsers();
+        fetchUsers().catch(error => console.error('Failed to fetch users:', error));
     });
 
     // Listen for messages from the server
@@ -810,13 +834,16 @@ if (form && input && messages && roomList) {
     // Check authentication status first, then initialize
     checkAuthStatus().then(() => {
         // Load room data and initial data after authentication
-        loadPublicRooms();
-        loadJoinedRooms();
+        loadPublicRooms().catch(error => console.error('Failed to load public rooms:', error));
+        loadJoinedRooms().catch(error => console.error('Failed to load joined rooms:', error));
 
         // Request initial data only after authentication
         socket.emit(Events.GetRooms);
         socket.emit(Events.GetUsers);
         socket.emit(Events.GetUserInfo);
+    }).catch(error => {
+        console.error('Authentication check failed:', error);
+        window.location.href = '/login.html';
     });
 
     // Handle orientation changes on mobile
@@ -842,9 +869,9 @@ if (form && input && messages && roomList) {
 async function loadPublicRooms() {
     try {
         const response = await fetch('/api/rooms/public');
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; rooms?: Room[]; error?: string };
 
-        if (result.success) {
+        if (result.success && result.rooms) {
             const publicRooms = result.rooms;
             // Update room list with public rooms
             if (roomList) {
@@ -858,7 +885,7 @@ async function loadPublicRooms() {
                 });
 
                 // Add public rooms
-                publicRooms.forEach((room: any) => {
+                publicRooms.forEach((room: Room) => {
                     addRoomToList(room.name);
                 });
             }
@@ -871,9 +898,9 @@ async function loadPublicRooms() {
 async function loadJoinedRooms() {
     try {
         const response = await fetch('/api/rooms/joined');
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; rooms?: Room[]; error?: string };
 
-        if (result.success) {
+        if (result.success && result.rooms) {
             const joinedRooms = result.rooms;
             console.log('Joined rooms:', joinedRooms);
             // You can highlight joined rooms or show special indicators
@@ -883,7 +910,7 @@ async function loadJoinedRooms() {
     }
 }
 
-async function joinRoom(roomName: string) {
+async function _joinRoom(roomName: string) {
     try {
         const response = await fetch('/api/rooms/join', {
             method: 'POST',
@@ -893,7 +920,7 @@ async function joinRoom(roomName: string) {
             body: JSON.stringify({ roomName })
         });
 
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; error?: string };
         if (result.success) {
             console.log(`Successfully joined room: ${roomName}`);
             // The socket will handle the actual room switching
@@ -906,7 +933,7 @@ async function joinRoom(roomName: string) {
     }
 }
 
-async function leaveRoom(roomName: string) {
+async function _leaveRoom(roomName: string) {
     try {
         const response = await fetch('/api/rooms/leave', {
             method: 'POST',
@@ -916,7 +943,7 @@ async function leaveRoom(roomName: string) {
             body: JSON.stringify({ roomName })
         });
 
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; error?: string };
         if (result.success) {
             console.log(`Successfully left room: ${roomName}`);
             // Switch to General room after leaving
@@ -941,7 +968,7 @@ async function createNewRoom(name: string, description: string = '', isPublic: b
             body: JSON.stringify({ name, description, isPublic })
         });
 
-        const result = await response.json();
+        const result = await response.json() as { success: boolean; error?: string };
         if (result.success) {
             console.log(`Successfully created room: ${name}`);
             addRoomToList(name);
@@ -977,9 +1004,9 @@ async function handleMentionInput() {
 
         // Only trigger if query is reasonable length and doesn't contain spaces
         if (query.length <= 20 && !query.includes(' ')) {
-            isMentioning = true;
+            _isMentioning = true;
             mentionStartPosition = atIndex;
-            mentionQuery = query;
+            _mentionQuery = query;
 
             // Load users if not cached
             if (mentionUsers.length === 0) {
