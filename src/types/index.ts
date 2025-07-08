@@ -1,22 +1,23 @@
 // Core application types
 
 export interface User {
-    id?: number;
-    username: string;
+    uuid: string;           // Permanent unique identifier (UUID)
+    email: string;          // Unique login credential (required)
+    username: string;       // Display name (changeable, can be non-unique with discriminator)
     firstName: string;
     lastName: string;
-    email?: string;
     avatar?: string;
     lastSeen?: string;
     isOnline?: boolean;
     createdAt?: string;
+    // Internal database ID (not exposed to client)
+    id?: number;
 }
 
 export interface Message {
     id?: number;
-    user_id?: number;
+    user_uuid: string;      // Reference to user by UUID
     room: string;
-    username: string;
     content: string;
     timestamp: string;
     messageType?: 'text' | 'system' | 'file';
@@ -28,7 +29,9 @@ export interface Message {
     file_size?: number;
     edited?: boolean;
     editedAt?: string;
+    // Populated user data for display
     user?: {
+        uuid: string;
         username: string;
         firstName: string;
         lastName: string;
@@ -41,9 +44,10 @@ export interface Room {
     name: string;
     description?: string;
     createdAt?: string;
-    createdBy?: string;
+    createdBy?: string;    // User UUID who created the room
+    isPublic?: boolean;
     is_private?: boolean;
-    created_by?: number;
+    created_by?: string;   // Deprecated - use createdBy
     created_at?: string;
 }
 
@@ -83,83 +87,62 @@ export interface DatabaseRow {
     [key: string]: unknown;
 }
 
-export interface SessionUser {
+// Authentication and login types
+export interface LoginCredentials {
+    email: string;
+    password?: string;  // For future password implementation
+}
+
+export interface RegisterCredentials {
+    email: string;
     username: string;
     firstName: string;
     lastName: string;
-    email?: string;
+    password?: string;  // For future password implementation
 }
 
-// API Response types for specific endpoints
-export interface UserSearchResponse {
-    success: boolean;
-    users?: User[];
-    error?: string;
+export interface SessionUser {
+    uuid: string;
+    email: string;
+    username: string;
+    firstName: string;
+    lastName: string;
+    avatar?: string;
 }
 
-export interface RoomListResponse {
-    success: boolean;
-    rooms?: Room[];
-    error?: string;
-}
-
-export interface FileUploadResponse {
-    success: boolean;
-    file?: FileUpload;
-    error?: string;
-}
-
-// Socket.IO event data types
-export interface JoinRoomData {
-    userName: string;
-    room: string;
-}
-
-export interface ChatMessageData {
-    userName: string;
-    room: string;
-    message: string;
-}
-
-export interface TypingData {
-    userName: string;
-    room: string;
-}
-
-// Database query result types
+// Database row types with proper UUID references
 export interface UserRowData {
     id: number;
+    uuid: string;
+    email: string;
     username: string;
     first_name: string;
     last_name: string;
-    email?: string;
-    avatar?: string;
+    avatar: string | null;
     last_seen: string;
-    is_online: boolean;
+    is_online: number;
     created_at: string;
 }
 
 export interface MessageRowData {
     id: number;
-    user_id: number;
+    user_uuid: string;
     room: string;
-    username: string;
     content: string;
     timestamp: string;
     message_type: string;
-    file_name?: string;
-    file_url?: string;
-    file_size?: number;
-    file_path?: string;
-    edited: boolean;
-    edited_at?: string;
+    file_name: string | null;
+    file_url: string | null;
+    file_size: number | null;
+    edited: number;
+    edited_at: string | null;
 }
 
 export interface RoomRowData {
     id: number;
     name: string;
     description?: string;
-    is_private: boolean;
-    created_by: number;
+    is_public: boolean;
+    created_by: string;
     created_at: string;
 }

@@ -44,10 +44,11 @@ export class MockDatabase {
     async createUser(username: string, firstName: string, lastName: string, email?: string): Promise<void> {
         this.users.set(username, {
             id: this.users.size + 1,
+            uuid: `test-uuid-${this.users.size + 1}`,
             username,
             firstName,
             lastName,
-            email,
+            email: email || `${username}@test.com`,
             lastSeen: new Date().toISOString(),
             isOnline: true,
             createdAt: new Date().toISOString()
@@ -83,6 +84,7 @@ export class MockDatabase {
 export function createTestUser(overrides: Partial<User> = {}): User {
     return {
         id: 1,
+        uuid: 'test-uuid-1',
         username: 'testuser',
         firstName: 'Test',
         lastName: 'User',

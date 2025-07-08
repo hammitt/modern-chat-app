@@ -290,59 +290,6 @@ class ChatDatabase {
         return rows.map(row => this.mapMessageRowToMessage(row));
     }
 
-    async getMessages(roomName: string, limit: number = 50, offset: number = 0): Promise<Message[]> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        const result = await this.db.all(`
-            SELECT id, user_uuid, room, content, timestamp, message_type, 
-                   file_name, file_url, file_size, edited, edited_at
-            FROM messages 
-            WHERE room = ? 
-            ORDER BY timestamp DESC 
-            LIMIT ? OFFSET ?
-        `, [roomName, limit, offset]);
-
-        return result.map((row) => this.mapMessageRowToMessage(row as MessageRowData));
-    }
-
-    async searchMessages(query: string, roomName?: string, limit: number = 50): Promise<Message[]> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        let sql = `
-            SELECT id, user_uuid, room, content, timestamp, message_type, 
-                   file_name, file_url, file_size, edited, edited_at
-            FROM messages 
-            WHERE content LIKE ?
-        `;
-        const params: (string | number)[] = [`%${query}%`];
-
-        if (roomName) {
-            sql += ' AND room = ?';
-            params.push(roomName);
-        }
-
-        sql += ' ORDER BY timestamp DESC LIMIT ?';
-        params.push(limit);
-
-        const result = await this.db.all(sql, params);
-        return result.map((row) => this.mapMessageRowToMessage(row as MessageRowData));
-    }
-
-    async searchUsers(query: string, limit: number = 50): Promise<User[]> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        const result = await this.db.all(`
-            SELECT id, uuid, email, username, first_name, last_name, 
-                   avatar, last_seen, is_online, created_at
-            FROM users 
-            WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?
-            ORDER BY username 
-            LIMIT ?
-        `, [`%${query}%`, `%${query}%`, `%${query}%`, limit]);
-
-        return result.map((row) => this.mapUserRowToUser(row as UserRowData));
-    }
-
     private mapMessageRowToMessage(row: MessageRowData & { username?: string; first_name?: string; last_name?: string; avatar?: string }): Message {
         return {
             id: row.id,
@@ -486,28 +433,6 @@ class ChatDatabase {
             createdAt: row.created_at,
             isPublic: Boolean(row.is_public)
         }));
-    }
-
-    // Room membership management (legacy compatibility methods)
-    async joinRoom(userUuid: string, roomName: string, invitedBy?: string): Promise<void> {
-        // This is just an alias for addUserToRoom for backward compatibility
-        await this.addUserToRoom(userUuid, roomName, invitedBy);
-    }
-
-    async leaveRoom(userUuid: string, roomName: string): Promise<void> {
-        // This is just an alias for removeUserFromRoom for backward compatibility
-        await this.removeUserFromRoom(userUuid, roomName);
-    }
-
-    async isUserInRoom(userUuid: string, roomName: string): Promise<boolean> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        const result: unknown = await this.db.get(`
-            SELECT 1 FROM room_memberships 
-            WHERE user_uuid = ? AND room_name = ?
-        `, [userUuid, roomName]);
-
-        return !!result;
     }
 
     async close(): Promise<void> {

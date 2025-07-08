@@ -26,7 +26,7 @@ class StateManager {
 
     constructor() {
         this.state = {
-            socket: io(),
+            socket: io({ autoConnect: false }), // Don't auto-connect
             currentUser: null,
             isAuthenticated: false,
             currentRoom: "General",
@@ -108,22 +108,28 @@ class StateManager {
 
 const stateManager = new StateManager();
 
-// State Management
-const state: ClientState = {
-    socket: io(),
-    currentUser: null,
-    isAuthenticated: false,
-    currentRoom: "General", // Default room, matches server
-    typingUsers: new Set<string>(),
-    isTyping: false,
-    mentionUsers: [],
-    isMentioning: false,
-    mentionQuery: "",
-    selectedMentionIndex: -1,
-    mentionStartPosition: -1,
-    connectionStatus: 'connecting',
-    messageCache: new Map(),
-    userCache: new Map()
+// Legacy state object for compatibility (will gradually migrate away from this)
+const state = {
+    get socket() { return stateManager.get('socket'); },
+    get currentUser() { return stateManager.get('currentUser'); },
+    set currentUser(value: User | null) { stateManager.set('currentUser', value); },
+    get isAuthenticated() { return stateManager.get('isAuthenticated'); },
+    set isAuthenticated(value: boolean) { stateManager.set('isAuthenticated', value); },
+    get currentRoom() { return stateManager.get('currentRoom'); },
+    set currentRoom(value: string) { stateManager.set('currentRoom', value); },
+    get typingUsers() { return stateManager.get('typingUsers'); },
+    get isTyping() { return stateManager.get('isTyping'); },
+    set isTyping(value: boolean) { stateManager.set('isTyping', value); },
+    get mentionUsers() { return stateManager.get('mentionUsers'); },
+    set mentionUsers(value: User[]) { stateManager.set('mentionUsers', value); },
+    get isMentioning() { return stateManager.get('isMentioning'); },
+    set isMentioning(value: boolean) { stateManager.set('isMentioning', value); },
+    get mentionQuery() { return stateManager.get('mentionQuery'); },
+    set mentionQuery(value: string) { stateManager.set('mentionQuery', value); },
+    get selectedMentionIndex() { return stateManager.get('selectedMentionIndex'); },
+    set selectedMentionIndex(value: number) { stateManager.set('selectedMentionIndex', value); },
+    get mentionStartPosition() { return stateManager.get('mentionStartPosition'); },
+    set mentionStartPosition(value: number) { stateManager.set('mentionStartPosition', value); }
 };
 
 // DOM Elements
@@ -165,10 +171,25 @@ async function checkAuthStatus() {
         if (result.authenticated) {
             stateManager.set('currentUser', result.user || null);
             stateManager.set('isAuthenticated', true);
-            if (result.user) {
-                // Send login event to socket
-                stateManager.get('socket').emit(Events.UserLogin, { username: result.user.username });
-                console.log('User authenticated:', result.user.username);
+            console.log('User authenticated and set in state:', result.user);
+
+            // Now connect the socket after authentication
+            const socket = stateManager.get('socket');
+            if (!socket.connected) {
+                socket.connect();
+                console.log('Socket connecting after authentication...');
+
+                // Send login event once when connected
+                if (result.user) {
+                    socket.once('connect', () => {
+                        console.log('Socket connected, sending user_login event for:', result.user?.username);
+                        socket.emit(Events.UserLogin, { username: result.user!.username });
+                    });
+                }
+            } else if (result.user) {
+                // Already connected, send login event immediately
+                console.log('Socket already connected, sending user_login event for:', result.user.username);
+                socket.emit(Events.UserLogin, { username: result.user.username });
             }
         } else {
             // Redirect to login if not authenticated
@@ -185,7 +206,11 @@ async function checkAuthStatus() {
 // Handle successful authentication from socket
 stateManager.get('socket').on(Events.AuthenticationSuccess, (data: { username: string }) => {
     console.log('Socket authentication successful:', data.username);
-    // This seems redundant if checkAuthStatus is the source of truth
+    // Update the state to reflect successful authentication
+    const currentUser = stateManager.get('currentUser');
+    if (currentUser) {
+        console.log('Authentication confirmed for user:', currentUser.username);
+    }
 });
 
 // Handle failed authentication from socket
@@ -327,8 +352,7 @@ function updateUsersList(users: User[]) {
         userElement.innerHTML = `
             <div class="user-avatar">${user.username.charAt(0).toUpperCase()}</div>
             <div class="user-info">
-                <div class="user-name">${user.firstName} ${user.lastName}</div>
-                <div class="user-username">@${user.username}</div>
+                <div class="user-name">${user.firstName} ${user.lastName} (@${user.username})</div>
             </div>
         `;
         usersList.appendChild(userElement);
@@ -820,17 +844,39 @@ if (form && input && messages && roomList) {
         const item = document.createElement("li");
 
         // Check if this is a file message
-        const { isFile, fileData } = parseFileMessage(msg.message);
+        const { isFile, fileData } = parseFileMessage(msg.message);        // Get current user from state manager
+        const currentUser = stateManager.get('currentUser');
+
+        // Determine if this is the current user's message
+        // Check both user comparison and if the message user matches the authenticated user
+        const isOwnMessage = currentUser && (
+            currentUser.id === msg.user.id ||
+            currentUser.username === msg.user.username ||
+            (currentUser.username && msg.user.username && currentUser.username === msg.user.username)
+        );
+
+        console.log('Message received:', {
+            currentUser: currentUser?.username,
+            currentUserId: currentUser?.id,
+            msgUser: msg.user.username,
+            msgUserId: msg.user.id,
+            isOwnMessage
+        });
+
+        // Create message header with sender info (for other users only)
+        if (!isOwnMessage) {
+            const messageHeader = document.createElement('div');
+            messageHeader.className = 'message-header';
+            messageHeader.innerHTML = `<span class="sender-name">${msg.user.firstName} ${msg.user.lastName}</span> <span class="sender-username">@${msg.user.username}</span>`;
+            item.appendChild(messageHeader);
+        }
 
         if (isFile && fileData) {
             // Handle file message
             const fileElement = createFileMessageElement(fileData, msg.user.username);
 
-            // Determine if this is the current user's message
-            const isOwnMessage = state.currentUser?.id === msg.user.id;
-
             if (isOwnMessage) {
-                item.classList.add('own-message');
+                item.classList.add('my-message');
             } else {
                 item.classList.add('other-message');
             }
@@ -838,24 +884,25 @@ if (form && input && messages && roomList) {
             item.appendChild(fileElement);
         } else {
             // Handle regular text message
-            // Determine if this is the current user's message
-            const isOwnMessage = state.currentUser?.id === msg.user.id;
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
 
-            // Add appropriate class for styling
             if (isOwnMessage) {
-                item.classList.add('own-message');
-                console.log('Adding own-message class for:', msg.message);
+                item.classList.add('my-message');
+                console.log('Added my-message class for text message:', item, 'currentUser:', currentUser?.username);
             } else {
                 item.classList.add('other-message');
-                console.log('Adding other-message class for:', msg.message);
+                console.log('Added other-message class for text message:', item);
             }
 
             // Highlight mentions
             if (msg.message.includes('@')) {
-                item.innerHTML = msg.message.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+                messageContent.innerHTML = msg.message.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
             } else {
-                item.textContent = msg.message;
+                messageContent.textContent = msg.message;
             }
+
+            item.appendChild(messageContent);
         }
 
         if (messages) {

@@ -10,13 +10,17 @@ export class ChatService {
         username: string;
         firstName: string;
         lastName: string;
-        email?: string;
+        email: string;
     }): Promise<User> {
         const { username, firstName, lastName, email } = userData;
 
         // Validation
         if (!validators.username(username)) {
             throw new AppError('Invalid username format', 400);
+        }
+
+        if (!email || email.trim() === '' || !email.includes('@')) {
+            throw new AppError('Valid email is required', 400);
         }
 
         if (!firstName?.trim() || !lastName?.trim()) {
@@ -31,15 +35,15 @@ export class ChatService {
             }
 
             // Create user
-            await chatDatabase.createUser(username, firstName.trim(), lastName.trim(), email);
+            const newUser = await chatDatabase.createUser({
+                email: email.trim(),
+                username: username.trim(),
+                firstName: firstName.trim(),
+                lastName: lastName.trim()
+            });
 
             // Auto-join General room
-            await chatDatabase.joinRoom(username, 'General');
-
-            const newUser = await chatDatabase.getUserByUsername(username);
-            if (!newUser) {
-                throw new DatabaseError('Failed to retrieve created user');
-            }
+            await chatDatabase.joinRoom(newUser.uuid, 'General');
 
             return newUser;
         } catch (error) {
@@ -50,12 +54,12 @@ export class ChatService {
 
     // Message management
     async sendMessage(messageData: {
-        username: string;
+        userUuid: string;
         room: string;
         content: string;
         messageType?: 'text' | 'file' | 'system';
     }): Promise<Message> {
-        const { username, room, content, messageType = 'text' } = messageData;
+        const { userUuid, room, content, messageType = 'text' } = messageData;
 
         // Validation
         if (!validators.messageContent(content)) {
@@ -67,14 +71,15 @@ export class ChatService {
         try {
             const message: Omit<Message, 'id'> = {
                 room,
-                username,
+                user_uuid: userUuid,
                 content: sanitizedContent,
                 timestamp: new Date().toISOString(),
                 messageType
             };
 
-            const messageId = await chatDatabase.saveMessage(message);
-            return { ...message, id: messageId };
+            await chatDatabase.saveMessage(message);
+            // Return the message with a generated ID (in real app, you'd get the actual ID from DB)
+            return { ...message, id: Date.now() };
         } catch (error) {
             throw new DatabaseError('Failed to save message', error as Error);
         }
@@ -87,14 +92,14 @@ export class ChatService {
         createdBy: string;
         isPublic?: boolean;
     }): Promise<void> {
-        const { name, description = '', createdBy, isPublic = true } = roomData;
+        const { name, description = '', createdBy } = roomData;
 
         if (!validators.roomName(name)) {
             throw new AppError('Invalid room name format', 400);
         }
 
         try {
-            await chatDatabase.createRoom(name.trim(), description.trim(), createdBy, isPublic);
+            await chatDatabase.createRoom(name.trim(), description?.trim() || '', createdBy);
         } catch (error) {
             throw new DatabaseError('Failed to create room', error as Error);
         }

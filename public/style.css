@@ -288,9 +288,9 @@ body {
 }
 
 #messages li {
-    padding: 1rem 1.25rem;
+    padding: 0.75rem 1rem;
     margin-bottom: 0.5rem;
-    border-radius: 24px;
+    border-radius: 18px;
     background: #f8f9fa;
     max-width: 70%;
     word-wrap: break-word;
@@ -305,6 +305,35 @@ body {
     position: relative;
     backdrop-filter: blur(10px);
     transition: all 0.2s ease;
+}
+
+/* Message header styling */
+.message-header {
+    margin-bottom: 0.25rem;
+    font-size: 0.8rem;
+    opacity: 0.8;
+}
+
+.sender-name {
+    font-weight: 600;
+    color: #333;
+}
+
+.sender-username {
+    color: #666;
+    font-weight: 400;
+}
+
+#messages li.my-message .sender-name {
+    color: rgba(255, 255, 255, 0.9);
+}
+
+#messages li.my-message .sender-username {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.message-content {
+    line-height: 1.4;
 }
 
 /* Message timestamp styling */
@@ -434,6 +463,47 @@ body {
     background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent);
     border-radius: inherit;
     pointer-events: none;
+}
+
+/* Alternative styling for my-message class */
+#messages li.my-message {
+    background: linear-gradient(135deg, #0084ff, #0066cc) !important;
+    color: white !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+    float: right !important;
+    clear: both !important;
+    border-bottom-right-radius: 8px !important;
+    box-shadow: 0 3px 12px rgba(0, 132, 255, 0.25),
+        0 1px 4px rgba(0, 132, 255, 0.15) !important;
+    position: relative;
+}
+
+/* More specific selector to ensure it overrides */
+ul#messages li.my-message {
+    background: linear-gradient(135deg, #0084ff, #0066cc) !important;
+    color: white !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+    float: right !important;
+    text-align: right !important;
+}
+
+#messages li.my-message::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent);
+    border-radius: inherit;
+    pointer-events: none;
+}
+
+#messages li.my-message:hover {
+    box-shadow: 0 5px 20px rgba(0, 132, 255, 0.3),
+        0 2px 8px rgba(0, 132, 255, 0.2);
 }
 
 /* Messages from other users (left-aligned) */
@@ -586,11 +656,13 @@ body {
     box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
     z-index: 100;
     flex-shrink: 0;
-    /* Prevent form from shrinking */
+    width: 100%;
+    /* Prevent form from shrinking and ensure full width */
 }
 
 #input {
     flex-grow: 1;
+    width: 100%;
     padding: 0.75rem 1rem;
     border: 1px solid #dee2e6;
     border-radius: 25px;
@@ -943,6 +1015,7 @@ body {
 .input-container {
     position: relative;
     flex-grow: 1;
+    width: 100%;
 }
 
 /* Mention dropdown styles */
