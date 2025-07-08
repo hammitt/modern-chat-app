@@ -8,15 +8,13 @@ export default tseslint.config(
         ignores: ["node_modules/", "dist/"],
     },
 
-    // Base recommended configs for type-checked linting
-    ...tseslint.configs.recommendedTypeChecked,
-
-    // Disable ESLint rules that conflict with Prettier
-    eslintConfigPrettier,
+    // Base config for JS files
+    ...tseslint.configs.recommended,
 
     // Configuration for all TypeScript files in the project
     {
         files: ["src/**/*.ts"],
+        extends: [...tseslint.configs.recommendedTypeChecked],
         languageOptions: {
             parserOptions: {
                 project: true,
@@ -42,7 +40,15 @@ export default tseslint.config(
 
     // Environment-specific configurations
     {
-        files: ["src/server.ts", "src/bot.ts", "src/testEnvironment.ts", "src/events.ts"],
+        files: [
+            "src/server.ts",
+            "src/bot.ts",
+            "src/testEnvironment.ts",
+            "src/events.ts",
+            "check-db.js",
+            "test-users.js",
+            "webpack.config.js",
+        ],
         languageOptions: {
             globals: {
                 ...globals.node,
@@ -56,5 +62,8 @@ export default tseslint.config(
                 ...globals.browser,
             },
         },
-    }
+    },
+
+    // Disable ESLint rules that conflict with Prettier
+    eslintConfigPrettier
 );

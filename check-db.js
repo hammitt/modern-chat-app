@@ -1,5 +1,5 @@
 // Check what's in the database
-const { chatDatabase } = require('./dist/database');
+import { chatDatabase } from './dist/database.js';
 
 async function checkDatabase() {
     await chatDatabase.init();

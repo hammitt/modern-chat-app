@@ -6,6 +6,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import session from 'express-session';
+import rateLimit from 'express-rate-limit';
+import { config } from './config.js';
+import { errorHandler, asyncHandler } from './errorHandler.js';
+import { chatService } from './chatService.js';
+import { performanceMonitor } from './performance.js';
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -13,8 +18,7 @@ const __dirname = path.dirname(__filename);
 import { Events } from './events.js';
 import { TEST_USERS, TEST_ROOMS, getBotResponse as getTestBotResponse, getMainBotResponse } from './testEnvironment.js';
 import { chatDatabase } from './database.js';
-import type { Message } from './types/index.js';
-
+import type { Message, User } from './types/index.js';
 
 // Extend socket.data interface
 declare module 'socket.io' {
@@ -36,11 +40,15 @@ declare module 'express-session' {
     }
 }
 
+// This is the in-memory user data linked to a socket connection
+interface ConnectedUser extends User {
+    socketId: string;
+    currentRoom: string;
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-
-const PORT = process.env.PORT || 3000;
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -79,14 +87,8 @@ interface RoomData {
     users: Set<string>;
 }
 
-interface UserData {
-    id: string;
-    name: string;
-    currentRoom: string;
-}
-
 const rooms = new Map<string, RoomData>();
-const users = new Map<string, UserData>();
+const connectedUsers = new Map<string, ConnectedUser>(); // key is socket.id
 const typingUsers = new Map<string, Set<string>>(); // room -> set of user names who are typing
 const typingTimeouts = new Map<string, Map<string, NodeJS.Timeout>>(); // room -> user -> timeout
 
@@ -121,21 +123,85 @@ function getOrCreateRoom(roomName: string): RoomData {
     return rooms.get(roomName)!;
 }
 
+// Enhanced message retrieval with user data
+async function sendRecentMessages(socket: Socket, roomName: string, limit: number = 50): Promise<void> {
+    try {
+        const messages = await chatDatabase.getRecentMessages(roomName, limit);
+
+        // Batch fetch user data for all message authors
+        const usernames = [...new Set(messages.map(msg => msg.username))];
+        const users = await chatDatabase.getUsersByUsernames(usernames);
+        const userMap = new Map(users.map(user => [user.username, user]));
+
+        // Send messages with enriched user data
+        for (const msg of messages) {
+            const user = userMap.get(msg.username);
+            if (user) {
+                socket.emit(Events.ChatMessage, {
+                    ...msg,
+                    user: {
+                        username: user.username,
+                        firstName: user.firstName,
+                        lastName: user.lastName,
+                        avatar: user.avatar
+                    }
+                });
+            } else {
+                socket.emit(Events.ChatMessage, msg.content);
+            }
+        }
+    } catch (error) {
+        console.error('Error loading recent messages:', error);
+    }
+}
+
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use('/dist', express.static(path.join(__dirname, '..', 'dist')));
 app.use(express.json()); // Parse JSON requests
 
-// Session configuration
-app.use(session({
-    secret: 'chat-app-secret-key', // In production, use a secure random key
+// Security headers middleware
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+    if (config.isProduction) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+
+    next();
+});
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: config.rateLimit.windowMs,
+    max: config.rateLimit.max,
+    message: {
+        error: 'Too many requests from this IP, please try again later.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+app.use(limiter);
+
+// Session middleware with enhanced security
+const sessionMiddleware = session({
+    secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false, // Set to true if using HTTPS
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    }
-}));
+        secure: config.session.secure,
+        maxAge: config.session.maxAge,
+        httpOnly: true,
+        sameSite: 'strict'
+    },
+    name: 'chat.sid' // Change default session name
+});
+
+app.use(sessionMiddleware);
 
 // Authentication routes
 app.get('/', (req, res) => {
@@ -146,76 +212,57 @@ app.get('/chat', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'public', 'chat.html'));
 });
 
-app.post('/api/login', (req, res) => {
-    (async () => {
-        try {
-            const { firstName, lastName, username, email } = req.body as {
-                firstName: string;
-                lastName: string;
-                username: string;
-                email?: string;
-            };
+app.post('/api/login', asyncHandler(async (req, res) => {
+    const { firstName, lastName, username, email } = req.body as {
+        firstName: string;
+        lastName: string;
+        username: string;
+        email?: string;
+    };
 
-            // Validate required fields
-            if (!firstName || !lastName || !username) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'First name, last name, and username are required'
-                });
+    try {
+        // Use chat service for user creation
+        const newUser = await chatService.createUser({
+            username,
+            firstName,
+            lastName,
+            email
+        });
+
+        // Create session
+        req.session.user = {
+            username: newUser.username,
+            firstName: newUser.firstName,
+            lastName: newUser.lastName,
+            email: newUser.email
+        };
+
+        res.json({
+            success: true,
+            user: {
+                username: newUser.username,
+                firstName: newUser.firstName,
+                lastName: newUser.lastName,
+                fullName: `${newUser.firstName} ${newUser.lastName}`,
+                email: newUser.email
             }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
 
-            // Check if username already exists
-            const existingUser = await chatDatabase.getUserByUsername(username);
-            if (existingUser) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Username already taken. Please choose another.'
-                });
-            }
-
-            // Create new user
-            await chatDatabase.createUser(username, firstName, lastName, email);
-
-            // Get the created user
-            const newUser = await chatDatabase.getUserByUsername(username);
-
-            // Create session
-            req.session.user = {
-                username: newUser!.username,
-                firstName: newUser!.firstName,
-                lastName: newUser!.lastName,
-                email: newUser!.email
-            };
-
-            // Join the user to the General room by default
-            await chatDatabase.joinRoom(username, 'General');
-
-            res.json({
-                success: true,
-                user: {
-                    username: newUser?.username,
-                    firstName: newUser?.firstName,
-                    lastName: newUser?.lastName,
-                    fullName: `${newUser?.firstName} ${newUser?.lastName}`,
-                    email: newUser?.email
-                }
+        if (error instanceof Error) {
+            res.status(400).json({
+                success: false,
+                error: error.message
             });
-
-        } catch (error) {
-            console.error('Login error:', error);
+        } else {
             res.status(500).json({
                 success: false,
                 error: 'Server error. Please try again.'
             });
         }
-    })().catch(error => {
-        console.error('Login error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Server error. Please try again.'
-        });
-    });
-});
+    }
+}));
 
 // File upload endpoint
 app.post('/upload', upload.single('file'), (req, res) => {
@@ -516,13 +563,16 @@ app.get('/api/session', (req, res) => {
     }
 });
 
+initializeServer().catch(error => {
+    console.error("Failed to initialize server:", error);
+    process.exit(1);
+});
+
 io.on(Events.Connection, (socket: Socket) => {
     console.log('a user connected');
 
     // For authentication, wait for user_login event
     const userId = socket.id;
-    let userName: string;
-    let authenticatedUser: { username: string; firstName: string; lastName: string; email?: string } | null = null;
 
     // Handle user authentication
     socket.on('user_login', (userData: { username: string }) => {
@@ -530,40 +580,32 @@ io.on(Events.Connection, (socket: Socket) => {
             try {
                 const user = await chatDatabase.getUserByUsername(userData.username);
                 if (user) {
-                    authenticatedUser = user;
-                    userName = user.username;
-
                     // Update user online status
-                    await chatDatabase.updateUserStatus(userName, true);
+                    await chatDatabase.updateUserStatus(user.username, true);
+
+                    const connectedUser: ConnectedUser = {
+                        ...user,
+                        socketId: socket.id,
+                        currentRoom: 'General'
+                    };
 
                     // Store user data
-                    users.set(userId, {
-                        id: userId,
-                        name: userName,
-                        currentRoom: 'General'
-                    });
+                    connectedUsers.set(socket.id, connectedUser);
 
-                    socket.data = { userName, room: 'General' };
+                    socket.data = { userName: user.username, room: 'General' };
 
                     // Join default room
                     void socket.join('General');
                     const room = getOrCreateRoom('General');
-                    room.users.add(userName);
+                    room.users.add(user.username);
 
                     // Notify others
-                    socket.broadcast.to('General').emit(Events.UserJoined, userName);
+                    socket.broadcast.to('General').emit(Events.UserJoined, user.username);
 
                     // Send recent messages
-                    try {
-                        const recentMessages = await chatDatabase.getRecentMessages('General', 50);
-                        recentMessages.forEach(msg => {
-                            socket.emit(Events.ChatMessage, msg.content);
-                        });
-                    } catch (error) {
-                        console.error('Error loading recent messages:', error);
-                    }
+                    await sendRecentMessages(socket, 'General');
 
-                    socket.emit('authentication_success', { username: userName });
+                    socket.emit('authentication_success', { username: user.username });
                 } else {
                     socket.emit('authentication_failed', 'User not found');
                 }
@@ -576,35 +618,38 @@ io.on(Events.Connection, (socket: Socket) => {
 
     // For backwards compatibility, create temp user if no authentication
     setTimeout(() => {
-        if (!authenticatedUser) {
-            userName = `User${Math.floor(Math.random() * 1000)}`;
+        if (!connectedUsers.has(socket.id)) {
+            const tempUsername = `User${Math.floor(Math.random() * 1000)}`;
 
-            users.set(userId, {
-                id: userId,
-                name: userName,
+            // This is a temporary user, so we'll create a partial ConnectedUser object.
+            const tempUser: ConnectedUser = {
+                id: 0, // No real ID for temp users
+                username: tempUsername,
+                firstName: 'Anonymous',
+                lastName: 'User',
+                socketId: socket.id,
                 currentRoom: 'General'
-            });
+            };
+            connectedUsers.set(socket.id, tempUser);
 
-            socket.data = { userName, room: 'General' };
+            socket.data = { userName: tempUsername, room: 'General' };
             void socket.join('General');
 
             const room = getOrCreateRoom('General');
-            room.users.add(userName);
+            room.users.add(tempUsername);
 
-            socket.broadcast.to('General').emit(Events.UserJoined, userName);
+            socket.broadcast.to('General').emit(Events.UserJoined, tempUsername);
         }
     }, 1000);
 
     socket.on(Events.Disconnect, () => {
         (async () => {
             console.log('user disconnected');
-            const userData = users.get(userId);
+            const userData = connectedUsers.get(socket.id);
             if (userData) {
                 // Update user status in database
                 try {
-                    if (authenticatedUser) {
-                        await chatDatabase.updateUserStatus(userData.name, false);
-                    }
+                    await chatDatabase.updateUserStatus(userData.username, false);
                 } catch (error) {
                     console.error('Error updating user status:', error);
                 }
@@ -612,32 +657,32 @@ io.on(Events.Connection, (socket: Socket) => {
                 // Remove user from room
                 const roomData = rooms.get(userData.currentRoom);
                 if (roomData) {
-                    roomData.users.delete(userData.name);
+                    roomData.users.delete(userData.username);
                 }
 
                 // Remove from typing users
                 const typingInRoom = typingUsers.get(userData.currentRoom);
                 if (typingInRoom) {
-                    typingInRoom.delete(userData.name);
+                    typingInRoom.delete(userData.username);
                     const roomTimeouts = typingTimeouts.get(userData.currentRoom);
                     if (roomTimeouts) {
-                        const userTimeout = roomTimeouts.get(userData.name);
+                        const userTimeout = roomTimeouts.get(userData.username);
                         if (userTimeout) {
                             clearTimeout(userTimeout);
-                            roomTimeouts.delete(userData.name);
+                            roomTimeouts.delete(userData.username);
                         }
                     }
                 }
 
-                socket.broadcast.to(userData.currentRoom).emit(Events.UserLeft, userData.name);
-                users.delete(userId);
+                socket.broadcast.to(userData.currentRoom).emit(Events.UserLeft, userData.username);
+                connectedUsers.delete(socket.id);
             }
         })().catch(console.error);
     });
 
     socket.on(Events.JoinRoom, (newRoom: string) => {
         (async () => {
-            const userData = users.get(userId);
+            const userData = connectedUsers.get(socket.id);
             if (!userData) return;
 
             const oldRoom = userData.currentRoom;
@@ -646,31 +691,24 @@ io.on(Events.Connection, (socket: Socket) => {
             void socket.leave(oldRoom);
             const oldRoomData = rooms.get(oldRoom);
             if (oldRoomData) {
-                oldRoomData.users.delete(userData.name);
+                oldRoomData.users.delete(userData.username);
             }
 
             // Join new room
             void socket.join(newRoom);
             const newRoomData = getOrCreateRoom(newRoom);
-            newRoomData.users.add(userData.name);
+            newRoomData.users.add(userData.username);
 
             // Update user data
             userData.currentRoom = newRoom;
-            socket.data = { userName: userData.name, room: newRoom };
+            socket.data = { userName: userData.username, room: newRoom };
 
             // Notify rooms
-            socket.broadcast.to(oldRoom).emit(Events.UserLeft, userData.name);
-            socket.broadcast.to(newRoom).emit(Events.UserJoined, userData.name);
+            socket.broadcast.to(oldRoom).emit(Events.UserLeft, userData.username);
+            socket.broadcast.to(newRoom).emit(Events.UserJoined, userData.username);
 
             // Send recent messages
-            try {
-                const recentMessages = await chatDatabase.getRecentMessages(newRoom, 50);
-                recentMessages.forEach(msg => {
-                    socket.emit(Events.ChatMessage, msg.content);
-                });
-            } catch (error) {
-                console.error('Error loading messages:', error);
-            }
+            await sendRecentMessages(socket, newRoom);
 
             socket.emit(Events.JoinedRoom, newRoom);
         })().catch(console.error);
@@ -678,7 +716,7 @@ io.on(Events.Connection, (socket: Socket) => {
 
     socket.on(Events.ChatMessage, (msg: string) => {
         (async () => {
-            const userData = users.get(userId);
+            const userData = connectedUsers.get(socket.id);
             if (!userData) return;
 
             // Input validation and sanitization
@@ -695,15 +733,12 @@ io.on(Events.Connection, (socket: Socket) => {
             const room = userData.currentRoom;
             console.log(`message in room ${room}: ${msg}`);
 
-            // Format message with user name
-            const formattedMsg = `${userData.name}: ${msg}`;
-
             // Save message to database
             try {
                 const messageData: Omit<Message, 'id'> = {
                     room: room,
-                    username: userData.name,
-                    content: formattedMsg,
+                    username: userData.username,
+                    content: msg,
                     timestamp: new Date().toISOString(),
                     messageType: 'text'
                 };
@@ -713,7 +748,7 @@ io.on(Events.Connection, (socket: Socket) => {
             }
 
             // Broadcast the message to the current room
-            io.to(room).emit(Events.ChatMessage, formattedMsg);
+            io.to(room).emit(Events.ChatMessage, { user: userData, message: msg });
 
             // Handle @mentions
             const mentionRegex = /@(\w+)/g;
@@ -721,11 +756,11 @@ io.on(Events.Connection, (socket: Socket) => {
 
             mentions.forEach(mentionedUser => {
                 // Find the mentioned user in active users
-                for (const [socketId, user] of users.entries()) {
-                    if (user.name.toLowerCase() === mentionedUser.toLowerCase()) {
+                for (const [socketId, user] of connectedUsers.entries()) {
+                    if (user.username.toLowerCase() === mentionedUser.toLowerCase()) {
                         io.to(socketId).emit(Events.UserMention, {
-                            from: userData.name,
-                            message: formattedMsg,
+                            from: userData.username,
+                            message: msg,
                             room: room
                         });
                         break;
@@ -757,7 +792,8 @@ io.on(Events.Connection, (socket: Socket) => {
                                     console.error('Error saving bot message:', error);
                                 }
 
-                                io.to(room).emit(Events.ChatMessage, botResponse);
+                                const botUser: User = { id: 0, username: 'Bot', firstName: 'Chat', lastName: 'Bot' };
+                                io.to(room).emit(Events.ChatMessage, { user: botUser, message: botResponse });
                             })().catch(console.error);
                         }, 500 + (Math.random() * 500));
                     }
@@ -767,7 +803,7 @@ io.on(Events.Connection, (socket: Socket) => {
                 if (Math.random() < 0.3) { // 30% chance
                     const randomUser = TEST_USERS[Math.floor(Math.random() * TEST_USERS.length)];
                     const mentionedBot = mentions.includes('bot') || mentions.includes(randomUser.name);
-                    const response = getTestBotResponse(randomUser, mentionedBot ? userData.name : undefined);
+                    const response = getTestBotResponse(randomUser, mentionedBot ? userData.username : undefined);
 
                     setTimeout(() => {
                         (async () => {
@@ -784,8 +820,10 @@ io.on(Events.Connection, (socket: Socket) => {
                             } catch (error) {
                                 console.error('Error saving test message:', error);
                             }
-
-                            io.to(room).emit(Events.ChatMessage, response);
+                            const testUser = await chatDatabase.getUserByUsername(randomUser.name);
+                            if (testUser) {
+                                io.to(room).emit(Events.ChatMessage, { user: testUser, message: response });
+                            }
                         })().catch(console.error);
                     }, 1000 + (Math.random() * 2000));
                 }
@@ -794,7 +832,7 @@ io.on(Events.Connection, (socket: Socket) => {
     });
 
     socket.on(Events.Typing, () => {
-        const userData = users.get(userId);
+        const userData = connectedUsers.get(userId);
         if (!userData) return;
 
         const room = userData.currentRoom;
@@ -811,77 +849,51 @@ io.on(Events.Connection, (socket: Socket) => {
         const roomTimeouts = typingTimeouts.get(room)!;
 
         // Clear existing timeout for this user
-        const existingTimeout = roomTimeouts.get(userData.name);
+        const existingTimeout = roomTimeouts.get(userData.username);
         if (existingTimeout) {
             clearTimeout(existingTimeout);
         }
 
         // Add user to typing list
-        typingInRoom.add(userData.name);
+        typingInRoom.add(userData.username);
 
         // Broadcast to the current room, except the sender
-        socket.broadcast.to(room).emit(Events.Typing, userData.name);
+        socket.broadcast.to(room).emit(Events.Typing, userData.username);
 
         // Set new timeout to remove user from typing after delay
         const timeout = setTimeout(() => {
-            typingInRoom.delete(userData.name);
-            roomTimeouts.delete(userData.name);
+            typingInRoom.delete(userData.username);
+            roomTimeouts.delete(userData.username);
             // Broadcast stop typing to the room
-            socket.broadcast.to(room).emit(Events.StopTyping, userData.name);
+            socket.broadcast.to(room).emit(Events.StopTyping, userData.username);
         }, 3000);
 
-        roomTimeouts.set(userData.name, timeout);
+        roomTimeouts.set(userData.username, timeout);
     });
 
     socket.on(Events.StopTyping, () => {
-        const userData = users.get(userId);
+        const userData = connectedUsers.get(userId);
         if (!userData) return;
 
         const room = userData.currentRoom;
         const typingInRoom = typingUsers.get(room);
         const roomTimeouts = typingTimeouts.get(room);
 
-        if (typingInRoom && typingInRoom.has(userData.name)) {
-            typingInRoom.delete(userData.name);
+        if (typingInRoom && typingInRoom.has(userData.username)) {
+            typingInRoom.delete(userData.username);
 
             // Clear timeout
             if (roomTimeouts) {
-                const userTimeout = roomTimeouts.get(userData.name);
+                const userTimeout = roomTimeouts.get(userData.username);
                 if (userTimeout) {
                     clearTimeout(userTimeout);
-                    roomTimeouts.delete(userData.name);
+                    roomTimeouts.delete(userData.username);
                 }
             }
 
             // Broadcast stop typing to the room
-            socket.broadcast.to(room).emit(Events.StopTyping, userData.name);
+            socket.broadcast.to(room).emit(Events.StopTyping, userData.username);
         }
-    });
-
-    socket.on(Events.CreateRoom, (roomName: string) => {
-        (async () => {
-            if (!roomName || roomName.trim() === '') return;
-
-            const cleanRoomName = roomName.trim();
-            const userData = users.get(userId);
-            if (!userData) return;
-
-            // Create the room if it doesn't exist
-            getOrCreateRoom(cleanRoomName);
-
-            // Create room in database
-            try {
-                await chatDatabase.createRoom(cleanRoomName, '', userData.name);
-            } catch (error) {
-                console.error('Error creating room in database:', error);
-            }
-
-            // Emit room created event
-            socket.emit(Events.RoomCreated, cleanRoomName);
-
-            // Broadcast new room to all users
-            io.emit(Events.RoomsList, Array.from(rooms.keys()));
-        })().catch(console.error);
     });
 
     socket.on(Events.GetRooms, () => {
@@ -889,52 +901,42 @@ io.on(Events.Connection, (socket: Socket) => {
     });
 
     socket.on(Events.GetUsers, () => {
-        const userData = users.get(userId);
-        if (!userData) return;
+        (async () => {
+            const userData = connectedUsers.get(socket.id);
+            if (!userData) return;
 
-        const room = userData.currentRoom;
-        const roomData = rooms.get(room);
-        const usersInRoom = roomData ? Array.from(roomData.users) : [];
+            const room = userData.currentRoom;
+            const roomData = rooms.get(room);
+            const usernamesInRoom = roomData ? Array.from(roomData.users) : [];
 
-        socket.emit(Events.UsersList, usersInRoom);
+            // Get full user objects
+            const usersInRoom = await chatDatabase.getUsersByUsernames(usernamesInRoom);
+
+            socket.emit(Events.UsersList, usersInRoom);
+        })().catch(console.error);
     });
 
     socket.on(Events.GetUserInfo, () => {
-        const userData = users.get(userId);
-        if (userData) {
-            socket.emit(Events.UserInfo, {
-                name: userData.name,
-                currentRoom: userData.currentRoom
-            });
-        }
+        const userData = connectedUsers.get(userId);
+        if (!userData) return;
+
+        // Emit user info
+        socket.emit(Events.UserInfo, userData);
     });
 });
 
-// Initialize server and start listening
-async function startServer() {
-    await initializeServer();
+// Add error handling middleware (must be last)
+app.use(errorHandler);
 
-    server.listen(PORT, () => {
-        console.log(`Server running on http://localhost:${PORT}`);
-    });
-}
+server.listen(config.port, () => {
+    console.log(`🚀 Server running on port ${config.port}`);
+    console.log(`📱 Chat app available at: \x1b[36mhttp://localhost:${config.port}\x1b[0m`);
+    console.log(`📋 Login page: \x1b[36mhttp://localhost:${config.port}/\x1b[0m`);
+    console.log(`💬 Chat page: \x1b[36mhttp://localhost:${config.port}/chat\x1b[0m`);
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-    (async () => {
-        console.log('\nShutting down gracefully...');
-        await chatDatabase.close();
-        process.exit(0);
-    })().catch(console.error);
+    // Log memory usage in development
+    if (!config.isProduction) {
+        console.log(`🔧 Development mode - Performance monitoring enabled`);
+        performanceMonitor.logMetrics();
+    }
 });
-
-process.on('SIGTERM', () => {
-    (async () => {
-        console.log('\nShutting down gracefully...');
-        await chatDatabase.close();
-        process.exit(0);
-    })().catch(console.error);
-});
-
-// Start the server
-void startServer().catch(console.error);

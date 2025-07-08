@@ -28,6 +28,12 @@ export interface Message {
     file_size?: number;
     edited?: boolean;
     editedAt?: string;
+    user?: {
+        username: string;
+        firstName: string;
+        lastName: string;
+        avatar?: string;
+    };
 }
 
 export interface Room {

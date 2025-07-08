@@ -158,6 +158,29 @@ class ChatDatabase {
         };
     }
 
+    async getUsersByUsernames(usernames: string[]): Promise<User[]> {
+        if (!this.db) throw new Error('Database not initialized');
+        if (usernames.length === 0) return [];
+
+        const placeholders = usernames.map(() => '?').join(',');
+        const rows = await this.db.all<UserRowData[]>(
+            `SELECT * FROM users WHERE username IN (${placeholders})`,
+            usernames
+        );
+
+        return rows.map(row => ({
+            id: row.id,
+            username: row.username,
+            firstName: row.first_name,
+            lastName: row.last_name,
+            email: row.email,
+            avatar: row.avatar,
+            lastSeen: row.last_seen,
+            isOnline: row.is_online,
+            createdAt: row.created_at
+        }));
+    }
+
     async getAllUsers(): Promise<User[]> {
         if (!this.db) throw new Error('Database not initialized');
 

@@ -1,5 +1,5 @@
 // Simple script to add test users with proper names
-const http = require('http');
+import http from 'http';
 
 const testUsers = [
     {

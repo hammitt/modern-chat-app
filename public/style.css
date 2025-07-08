@@ -817,6 +817,17 @@ body {
         flex-direction: row;
     }
 
+    #chat-window {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+    }
+
+    #form {
+        margin: 1rem;
+        border-radius: 8px;
+    }
+
     #mobile-header {
         display: none;
     }
@@ -855,6 +866,76 @@ body {
 
     #create-room-btn:hover {
         transform: none;
+    }
+
+    #messages li {
+        clear: both;
+    }
+
+    #messages li p {
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    #messages li a {
+        color: inherit;
+        text-decoration: underline;
+        text-decoration-color: rgba(255, 255, 255, 0.5);
+        transition: text-decoration-color 0.2s ease;
+    }
+
+    #messages li a:hover {
+        text-decoration-color: currentColor;
+    }
+
+    /* Code blocks in messages */
+    #messages li code {
+        background: rgba(0, 0, 0, 0.1);
+        padding: 0.125rem 0.25rem;
+        border-radius: 4px;
+        font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+        font-size: 0.875em;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+
+    #messages li.own-message code {
+        background: rgba(255, 255, 255, 0.2);
+        border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    /* Messages from current user (right-aligned) */
+    #messages li.own-message {
+        background: linear-gradient(135deg, #0084ff, #0066cc);
+        color: white;
+        margin-left: auto;
+        border-bottom-right-radius: 8px;
+        box-shadow: 0 3px 12px rgba(0, 132, 255, 0.25),
+            0 1px 4px rgba(0, 132, 255, 0.15);
+        position: relative;
+    }
+
+    #messages li.own-message::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent);
+        border-radius: inherit;
+        pointer-events: none;
+    }
+
+    /* Messages from other users (left-aligned) */
+    #messages li.other-message {
+        background: #ffffff;
+        color: #2c2e31;
+        margin-right: auto;
+        border-bottom-left-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08),
+            0 1px 3px rgba(0, 0, 0, 0.06);
+        border: 1px solid rgba(0, 0, 0, 0.06);
+        position: relative;
     }
 }
 

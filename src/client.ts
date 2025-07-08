@@ -1,8 +1,130 @@
-import { io } from 'socket.io-client';
-import { Events } from './events.js';
-import type { User, Room } from './types/index.js';
+import { io, type Socket } from "socket.io-client";
+import { Events } from "./events";
+import type { User, Room, Message } from "./types";
 
-const socket = io();
+// Enhanced state management with better type safety
+interface ClientState {
+    socket: Socket;
+    currentUser: User | null;
+    isAuthenticated: boolean;
+    currentRoom: string;
+    typingUsers: Set<string>;
+    isTyping: boolean;
+    mentionUsers: User[];
+    isMentioning: boolean;
+    mentionQuery: string;
+    selectedMentionIndex: number;
+    mentionStartPosition: number;
+    connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
+    messageCache: Map<string, Message[]>;
+    userCache: Map<string, User>;
+}
+
+class StateManager {
+    private state: ClientState;
+    private listeners: Map<keyof ClientState, Set<(value: unknown) => void>> = new Map();
+
+    constructor() {
+        this.state = {
+            socket: io(),
+            currentUser: null,
+            isAuthenticated: false,
+            currentRoom: "General",
+            typingUsers: new Set<string>(),
+            isTyping: false,
+            mentionUsers: [],
+            isMentioning: false,
+            mentionQuery: "",
+            selectedMentionIndex: -1,
+            mentionStartPosition: -1,
+            connectionStatus: 'connecting',
+            messageCache: new Map(),
+            userCache: new Map()
+        };
+    }
+
+    get<K extends keyof ClientState>(key: K): ClientState[K] {
+        return this.state[key];
+    }
+
+    set<K extends keyof ClientState>(key: K, value: ClientState[K]): void {
+        this.state[key] = value;
+        this.notifyListeners(key, value);
+    }
+
+    subscribe<K extends keyof ClientState>(
+        key: K,
+        callback: (value: ClientState[K]) => void
+    ): () => void {
+        if (!this.listeners.has(key)) {
+            this.listeners.set(key, new Set());
+        }
+
+        // Type assertion needed due to type system limitations
+        const typedCallback = callback as (value: unknown) => void;
+        this.listeners.get(key)!.add(typedCallback);
+
+        // Return unsubscribe function
+        return () => {
+            this.listeners.get(key)?.delete(typedCallback);
+        };
+    }
+
+    private notifyListeners<K extends keyof ClientState>(key: K, value: ClientState[K]): void {
+        this.listeners.get(key)?.forEach(callback => callback(value));
+    }
+
+    // Helper methods for common operations
+    addTypingUser(username: string): void {
+        const typingUsers = new Set(this.state.typingUsers);
+        typingUsers.add(username);
+        this.set('typingUsers', typingUsers);
+    }
+
+    removeTypingUser(username: string): void {
+        const typingUsers = new Set(this.state.typingUsers);
+        typingUsers.delete(username);
+        this.set('typingUsers', typingUsers);
+    }
+
+    cacheMessage(roomName: string, message: Message): void {
+        const cache = new Map(this.state.messageCache);
+        const roomMessages = cache.get(roomName) || [];
+        roomMessages.push(message);
+
+        // Keep only last 100 messages per room
+        if (roomMessages.length > 100) {
+            roomMessages.splice(0, roomMessages.length - 100);
+        }
+
+        cache.set(roomName, roomMessages);
+        this.set('messageCache', cache);
+    }
+
+    getCachedMessages(roomName: string): Message[] {
+        return this.state.messageCache.get(roomName) || [];
+    }
+}
+
+const stateManager = new StateManager();
+
+// State Management
+const state: ClientState = {
+    socket: io(),
+    currentUser: null,
+    isAuthenticated: false,
+    currentRoom: "General", // Default room, matches server
+    typingUsers: new Set<string>(),
+    isTyping: false,
+    mentionUsers: [],
+    isMentioning: false,
+    mentionQuery: "",
+    selectedMentionIndex: -1,
+    mentionStartPosition: -1,
+    connectionStatus: 'connecting',
+    messageCache: new Map(),
+    userCache: new Map()
+};
 
 // DOM Elements
 const form = document.getElementById('form');
@@ -33,21 +155,6 @@ const _mobileUsersToggle = document.getElementById('mobile-users-toggle');
 
 let typingTimer: number;
 const TYPING_TIMER_LENGTH = 1500; // ms
-let currentRoom = "General"; // Default room, matches server
-const typingUsers = new Set<string>(); // Track who's typing
-let currentUserName = ""; // Track current user's name for message alignment
-let isTyping = false; // Track if current user is in typing state
-
-// Mention autocomplete variables
-let mentionUsers: User[] = []; // Cache of users for mention autocomplete
-let _isMentioning = false; // Track if user is currently typing a mention
-let _mentionQuery = ""; // Current mention search query
-let selectedMentionIndex = -1; // Currently selected mention item
-let mentionStartPosition = -1; // Position where mention started
-
-// Authentication and user management
-let currentUser: User | null = null;
-let _isAuthenticated = false;
 
 // Check authentication status on page load
 async function checkAuthStatus() {
@@ -56,14 +163,12 @@ async function checkAuthStatus() {
         const result = await response.json() as { authenticated: boolean; user?: User };
 
         if (result.authenticated) {
-            currentUser = result.user || null;
-            _isAuthenticated = true;
-            if (currentUser) {
-                currentUserName = currentUser.username;
-
+            stateManager.set('currentUser', result.user || null);
+            stateManager.set('isAuthenticated', true);
+            if (result.user) {
                 // Send login event to socket
-                socket.emit('user_login', { username: currentUser.username });
-                console.log('User authenticated:', currentUser.username);
+                stateManager.get('socket').emit(Events.UserLogin, { username: result.user.username });
+                console.log('User authenticated:', result.user.username);
             }
         } else {
             // Redirect to login if not authenticated
@@ -78,13 +183,13 @@ async function checkAuthStatus() {
 }
 
 // Handle successful authentication from socket
-socket.on('authentication_success', (data: { username: string }) => {
+stateManager.get('socket').on(Events.AuthenticationSuccess, (data: { username: string }) => {
     console.log('Socket authentication successful:', data.username);
-    currentUserName = data.username;
+    // This seems redundant if checkAuthStatus is the source of truth
 });
 
 // Handle failed authentication from socket
-socket.on('authentication_failed', (error: string) => {
+stateManager.get('socket').on(Events.AuthenticationFailed, (error: string) => {
     console.error('Socket authentication failed:', error);
     window.location.href = '/login.html';
 });
@@ -141,19 +246,19 @@ function setActiveRoomButton(room: string) {
 function updateTypingIndicator() {
     if (!typingIndicator) return;
 
-    console.log('Updating typing indicator. Users typing:', Array.from(typingUsers));
+    console.log('Updating typing indicator. Users typing:', Array.from(state.typingUsers));
 
-    if (typingUsers.size === 0) {
+    if (state.typingUsers.size === 0) {
         typingIndicator.textContent = "";
         typingIndicator.style.display = "none";
         console.log('Hiding typing indicator');
-    } else if (typingUsers.size === 1) {
-        const message = `💬 ${Array.from(typingUsers)[0]} is typing...`;
+    } else if (state.typingUsers.size === 1) {
+        const message = `💬 ${Array.from(state.typingUsers)[0]} is typing...`;
         typingIndicator.textContent = message;
         typingIndicator.style.display = "flex";
         console.log('Showing typing indicator:', message);
     } else {
-        const message = `💬 ${typingUsers.size} people are typing...`;
+        const message = `💬 ${state.typingUsers.size} people are typing...`;
         typingIndicator.textContent = message;
         typingIndicator.style.display = "flex";
         console.log('Showing typing indicator:', message);
@@ -161,21 +266,21 @@ function updateTypingIndicator() {
 }
 
 function switchRoom(newRoom: string) {
-    if (newRoom === currentRoom) return;
+    if (newRoom === state.currentRoom) return;
 
     // Stop typing when switching rooms
     clearTimeout(typingTimer);
-    if (isTyping) {
-        socket.emit(Events.StopTyping);
-        isTyping = false;
+    if (state.isTyping) {
+        state.socket.emit(Events.StopTyping);
+        state.isTyping = false;
     }
 
-    socket.emit(Events.JoinRoom, newRoom);
-    currentRoom = newRoom;
+    state.socket.emit(Events.JoinRoom, newRoom);
+    state.currentRoom = newRoom;
 
     // Clear messages and typing indicators
     if (messages) messages.innerHTML = "";
-    typingUsers.clear();
+    state.typingUsers.clear();
     updateTypingIndicator();
     setActiveRoomButton(newRoom);
 
@@ -183,7 +288,7 @@ function switchRoom(newRoom: string) {
     closeSidebar();
 
     // Request users in the new room
-    socket.emit(Events.GetUsers);
+    state.socket.emit(Events.GetUsers);
 }
 
 function createRoom() {
@@ -212,14 +317,20 @@ function addRoomToList(roomName: string) {
     roomList.appendChild(button);
 }
 
-function updateUsersList(users: string[]) {
+function updateUsersList(users: User[]) {
     if (!usersList) return;
 
     usersList.innerHTML = '';
     users.forEach(user => {
         const userElement = document.createElement('div');
         userElement.className = 'user-item';
-        userElement.textContent = user;
+        userElement.innerHTML = `
+            <div class="user-avatar">${user.username.charAt(0).toUpperCase()}</div>
+            <div class="user-info">
+                <div class="user-name">${user.firstName} ${user.lastName}</div>
+                <div class="user-username">@${user.username}</div>
+            </div>
+        `;
         usersList.appendChild(userElement);
     });
 }
@@ -302,7 +413,7 @@ async function uploadFile(file: File) {
     try {
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('room', currentRoom);
+        formData.append('room', state.currentRoom);
 
         const response = await fetch('/upload', {
             method: 'POST',
@@ -321,7 +432,7 @@ async function uploadFile(file: File) {
 
             // Send file message through socket
             const fileMessage = createFileMessage(file.name, result.file);
-            socket.emit(Events.ChatMessage, fileMessage);
+            state.socket.emit(Events.ChatMessage, fileMessage);
         } else {
             removeUploadProgress();
             alert('File upload failed: ' + result.error);
@@ -429,7 +540,7 @@ async function fetchUsers(): Promise<void> {
     try {
         const response = await fetch('/api/users');
         if (response.ok) {
-            mentionUsers = await response.json() as User[];
+            state.mentionUsers = await response.json() as User[];
         }
     } catch (error) {
         console.error('Error fetching users:', error);
@@ -459,7 +570,7 @@ async function getAllUsers(): Promise<User[]> {
         const result = await response.json() as { success: boolean; users?: User[]; error?: string };
 
         if (result.success) {
-            mentionUsers = result.users || [];
+            state.mentionUsers = result.users || [];
             return result.users || [];
         } else {
             console.error('Error getting users:', result.error);
@@ -487,7 +598,7 @@ function showMentionDropdown(users: User[], query: string) {
 
     // Create dropdown content
     mentionDropdown.innerHTML = '';
-    selectedMentionIndex = -1;
+    state.selectedMentionIndex = -1;
 
     filteredUsers.forEach((user, _index) => {
         const item = document.createElement('div');
@@ -517,16 +628,16 @@ function hideMentionDropdown() {
         mentionDropdown.style.display = 'none';
         mentionDropdown.innerHTML = '';
     }
-    _isMentioning = false;
-    selectedMentionIndex = -1;
+    state.isMentioning = false;
+    state.selectedMentionIndex = -1;
 }
 
 function insertMention(username: string) {
     if (!input) return;
 
     const currentValue = input.value;
-    const beforeMention = currentValue.substring(0, mentionStartPosition);
-    const afterMention = currentValue.substring(input.selectionStart || mentionStartPosition);
+    const beforeMention = currentValue.substring(0, state.mentionStartPosition);
+    const afterMention = currentValue.substring(input.selectionStart || state.mentionStartPosition);
 
     const newValue = beforeMention + `@${username} ` + afterMention;
     input.value = newValue;
@@ -548,18 +659,18 @@ function handleMentionNavigation(e: KeyboardEvent): boolean {
     switch (e.key) {
         case 'ArrowDown':
             e.preventDefault();
-            selectedMentionIndex = Math.min(selectedMentionIndex + 1, items.length - 1);
+            state.selectedMentionIndex = Math.min(state.selectedMentionIndex + 1, items.length - 1);
             updateMentionSelection(items);
             return true;
         case 'ArrowUp':
             e.preventDefault();
-            selectedMentionIndex = Math.max(selectedMentionIndex - 1, 0);
+            state.selectedMentionIndex = Math.max(state.selectedMentionIndex - 1, 0);
             updateMentionSelection(items);
             return true;
         case 'Enter':
             e.preventDefault();
-            if (selectedMentionIndex >= 0 && selectedMentionIndex < items.length) {
-                const selectedItem = items[selectedMentionIndex];
+            if (state.selectedMentionIndex >= 0 && state.selectedMentionIndex < items.length) {
+                const selectedItem = items[state.selectedMentionIndex];
                 const username = selectedItem.querySelector('.mention-username')?.textContent?.substring(1); // Remove @
                 if (username) {
                     insertMention(username);
@@ -577,7 +688,7 @@ function handleMentionNavigation(e: KeyboardEvent): boolean {
 
 function updateMentionSelection(items: NodeListOf<Element>) {
     items.forEach((item, index) => {
-        if (index === selectedMentionIndex) {
+        if (index === state.selectedMentionIndex) {
             item.classList.add('selected');
         } else {
             item.classList.remove('selected');
@@ -614,13 +725,13 @@ if (form && input && messages && roomList) {
         if (input.value.trim()) {
             // Stop typing when sending message
             clearTimeout(typingTimer);
-            if (isTyping) {
-                socket.emit(Events.StopTyping);
-                isTyping = false;
+            if (state.isTyping) {
+                state.socket.emit(Events.StopTyping);
+                state.isTyping = false;
             }
 
             // Send the message to the server
-            socket.emit(Events.ChatMessage, input.value);
+            state.socket.emit(Events.ChatMessage, input.value);
             input.value = "";
 
             // Ensure mobile keyboard stays visible
@@ -640,23 +751,23 @@ if (form && input && messages && roomList) {
         if (input.value.trim().length > 0) {
             // Always emit typing event to refresh server-side timeout
             console.log("Emitting typing event");
-            socket.emit(Events.Typing);
-            isTyping = true;
+            state.socket.emit(Events.Typing);
+            state.isTyping = true;
         } else {
             // Input is empty, stop typing immediately
-            if (isTyping) {
+            if (state.isTyping) {
                 console.log("Emitting stop typing event (empty input)");
-                socket.emit(Events.StopTyping);
-                isTyping = false;
+                state.socket.emit(Events.StopTyping);
+                state.isTyping = false;
             }
         }
 
         // Reset timer - stop typing after user stops typing
         typingTimer = window.setTimeout(() => {
-            if (isTyping) {
+            if (state.isTyping) {
                 console.log("Typing timeout - emitting stop typing");
-                socket.emit(Events.StopTyping);
-                isTyping = false;
+                state.socket.emit(Events.StopTyping);
+                state.isTyping = false;
             }
         }, TYPING_TIMER_LENGTH);
     });
@@ -678,46 +789,45 @@ if (form && input && messages && roomList) {
     // Stop typing when input loses focus
     input.addEventListener("blur", () => {
         clearTimeout(typingTimer);
-        if (isTyping) {
+        if (state.isTyping) {
             console.log("Input lost focus - stopping typing");
-            socket.emit(Events.StopTyping);
-            isTyping = false;
+            state.socket.emit(Events.StopTyping);
+            state.isTyping = false;
         }
         // Hide mention dropdown when input loses focus
         setTimeout(() => {
             hideMentionDropdown();
-            _isMentioning = false;
+            state.isMentioning = false;
         }, 200); // Small delay to allow click events on dropdown items
     });
 
     // Listen for connection
-    socket.on('connect', () => {
+    state.socket.on('connect', () => {
         console.log('Connected to server');
         // Request user info immediately upon connection
-        socket.emit(Events.GetUserInfo);
+        state.socket.emit(Events.GetUserInfo);
         // Fetch users for mention autocomplete
         fetchUsers().catch(error => console.error('Failed to fetch users:', error));
     });
 
     // Listen for messages from the server
-    socket.on(Events.ChatMessage, (msg: string) => {
+    state.socket.on(Events.ChatMessage, (msg: { user: User, message: string }) => {
         // A message arrived, hide the typing indicator
-        typingUsers.clear();
+        state.typingUsers.clear();
         updateTypingIndicator();
         clearTimeout(typingTimer);
 
         const item = document.createElement("li");
 
         // Check if this is a file message
-        const { isFile, fileData } = parseFileMessage(msg);
+        const { isFile, fileData } = parseFileMessage(msg.message);
 
         if (isFile && fileData) {
             // Handle file message
-            const username = msg.split(':')[0]; // Extract username from message
-            const fileElement = createFileMessageElement(fileData, username);
+            const fileElement = createFileMessageElement(fileData, msg.user.username);
 
             // Determine if this is the current user's message
-            const isOwnMessage = currentUserName && msg.startsWith(`${currentUserName}:`);
+            const isOwnMessage = state.currentUser?.id === msg.user.id;
 
             if (isOwnMessage) {
                 item.classList.add('own-message');
@@ -729,26 +839,22 @@ if (form && input && messages && roomList) {
         } else {
             // Handle regular text message
             // Determine if this is the current user's message
-            const isOwnMessage = currentUserName && msg.startsWith(`${currentUserName}:`);
+            const isOwnMessage = state.currentUser?.id === msg.user.id;
 
             // Add appropriate class for styling
             if (isOwnMessage) {
                 item.classList.add('own-message');
-                console.log('Adding own-message class for:', msg);
-            } else if (msg.includes(':') && !msg.includes('Bot:') && !msg.includes(' joined the room') && !msg.includes(' left the room')) {
-                // Regular user message from someone else (not system message)
-                item.classList.add('other-message');
-                console.log('Adding other-message class for:', msg);
+                console.log('Adding own-message class for:', msg.message);
             } else {
-                // System or bot message - no special alignment
-                console.log('System/bot message:', msg);
+                item.classList.add('other-message');
+                console.log('Adding other-message class for:', msg.message);
             }
 
             // Highlight mentions
-            if (msg.includes('@')) {
-                item.innerHTML = msg.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+            if (msg.message.includes('@')) {
+                item.innerHTML = msg.message.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
             } else {
-                item.textContent = msg;
+                item.textContent = msg.message;
             }
         }
 
@@ -759,36 +865,36 @@ if (form && input && messages && roomList) {
     });
 
     // Listen for typing events from other users
-    socket.on(Events.Typing, (userName: string) => {
+    state.socket.on(Events.Typing, (userName: string) => {
         console.log(`${userName} is typing`);
-        typingUsers.add(userName);
+        state.typingUsers.add(userName);
         updateTypingIndicator();
     });
 
     // Listen for stop typing events from other users
-    socket.on(Events.StopTyping, (userName: string) => {
+    state.socket.on(Events.StopTyping, (userName: string) => {
         console.log(`${userName} stopped typing`);
-        typingUsers.delete(userName);
+        state.typingUsers.delete(userName);
         updateTypingIndicator();
     });
 
     // Listen for room updates
-    socket.on(Events.RoomsList, (rooms: string[]) => {
+    state.socket.on(Events.RoomsList, (rooms: string[]) => {
         rooms.forEach(room => addRoomToList(room));
     });
 
     // Listen for user updates
-    socket.on(Events.UsersList, (users: string[]) => {
+    state.socket.on(Events.UsersList, (users: User[]) => {
         updateUsersList(users);
     });
 
     // Listen for mentions
-    socket.on(Events.UserMention, (data: { from: string, message: string, room: string }) => {
+    state.socket.on(Events.UserMention, (data: { from: string, message: string, room: string }) => {
         showMention(data);
     });
 
     // Listen for user join/leave events
-    socket.on(Events.UserJoined, (userName: string) => {
+    state.socket.on(Events.UserJoined, (userName: string) => {
         const item = document.createElement("li");
         item.className = "system-message";
         item.textContent = `${userName} joined the room`;
@@ -796,10 +902,10 @@ if (form && input && messages && roomList) {
         scrollToBottom();
 
         // Refresh users list
-        socket.emit(Events.GetUsers);
+        state.socket.emit(Events.GetUsers);
     });
 
-    socket.on(Events.UserLeft, (userName: string) => {
+    state.socket.on(Events.UserLeft, (userName: string) => {
         const item = document.createElement("li");
         item.className = "system-message";
         item.textContent = `${userName} left the room`;
@@ -807,27 +913,27 @@ if (form && input && messages && roomList) {
         scrollToBottom();
 
         // Remove from typing users
-        typingUsers.delete(userName);
+        state.typingUsers.delete(userName);
         updateTypingIndicator();
 
         // Refresh users list
-        socket.emit(Events.GetUsers);
+        state.socket.emit(Events.GetUsers);
     });
 
     // Listen for room creation confirmation
-    socket.on(Events.RoomCreated, (roomName: string) => {
+    state.socket.on(Events.RoomCreated, (roomName: string) => {
         addRoomToList(roomName);
         switchRoom(roomName); // Auto-join the created room
     });
 
     // Listen for user info
-    socket.on(Events.UserInfo, (userInfo: { name: string, id: string, currentRoom: string }) => {
-        currentUserName = userInfo.name;
-        console.log('Current user name set to:', currentUserName);
+    state.socket.on(Events.UserInfo, (userInfo: { name: string, id: string, currentRoom: string }) => {
+        // This is handled by the checkAuthStatus function now
+        console.log('User info received, but will rely on session auth:', userInfo);
     });
 
     // Optional: Listen for confirmation of room join
-    socket.on(Events.JoinedRoom, (room) => {
+    state.socket.on(Events.JoinedRoom, (room) => {
         console.log(`Successfully joined room: ${room}`);
     });
 
@@ -838,9 +944,9 @@ if (form && input && messages && roomList) {
         loadJoinedRooms().catch(error => console.error('Failed to load joined rooms:', error));
 
         // Request initial data only after authentication
-        socket.emit(Events.GetRooms);
-        socket.emit(Events.GetUsers);
-        socket.emit(Events.GetUserInfo);
+        state.socket.emit(Events.GetRooms);
+        state.socket.emit(Events.GetUsers);
+        state.socket.emit(Events.GetUserInfo);
     }).catch(error => {
         console.error('Authentication check failed:', error);
         window.location.href = '/login.html';
@@ -947,7 +1053,7 @@ async function _leaveRoom(roomName: string) {
         if (result.success) {
             console.log(`Successfully left room: ${roomName}`);
             // Switch to General room after leaving
-            if (currentRoom === roomName) {
+            if (state.currentRoom === roomName) {
                 switchRoom('General');
             }
         } else {
@@ -1004,17 +1110,17 @@ async function handleMentionInput() {
 
         // Only trigger if query is reasonable length and doesn't contain spaces
         if (query.length <= 20 && !query.includes(' ')) {
-            _isMentioning = true;
-            mentionStartPosition = atIndex;
-            _mentionQuery = query;
+            state.isMentioning = true;
+            state.mentionStartPosition = atIndex;
+            state.mentionQuery = query;
 
             // Load users if not cached
-            if (mentionUsers.length === 0) {
+            if (state.mentionUsers.length === 0) {
                 await getAllUsers();
             }
 
             // Show dropdown with filtered users
-            showMentionDropdown(mentionUsers, query);
+            showMentionDropdown(state.mentionUsers, query);
         } else {
             hideMentionDropdown();
         }
