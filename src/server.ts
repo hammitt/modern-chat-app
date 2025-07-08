@@ -482,7 +482,7 @@ app.get('/api/rooms/user', (req, res) => {
                 return res.status(401).json({ error: 'Not authenticated' });
             }
 
-            const userRooms = await chatDatabase.getUserRooms(req.session.user.username);
+            const userRooms = await chatDatabase.getUserRooms(req.session.user.uuid);
             res.json(userRooms);
         } catch (error) {
             console.error('Error fetching user rooms:', error);

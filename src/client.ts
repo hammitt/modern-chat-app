@@ -555,7 +555,7 @@ function addMessage(msg: Message) {
         } else {
             messageContent.textContent = msg.content;
         }
-        
+
         const messageTimestamp = document.createElement('div');
         messageTimestamp.className = 'message-timestamp';
         messageTimestamp.textContent = new Date(msg.timestamp).toLocaleTimeString();
@@ -563,7 +563,7 @@ function addMessage(msg: Message) {
         messageBody.appendChild(messageHeader);
         messageBody.appendChild(messageContent);
         messageBody.appendChild(messageTimestamp);
-        
+
         item.appendChild(avatar);
         item.appendChild(messageBody);
 
@@ -669,7 +669,7 @@ function handleMentionNavigation(e: KeyboardEvent): boolean {
     } else {
         return false;
     }
-    
+
     stateManager.set('selectedMentionIndex', index);
     showMentionDropdown(stateManager.get('mentionUsers'), stateManager.get('mentionQuery'));
     return true;
