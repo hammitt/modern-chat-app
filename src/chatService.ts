@@ -3,6 +3,8 @@ import { chatDatabase } from './database.js';
 import type { User, Message } from './types/index.js';
 import { AppError, DatabaseError } from './errorHandler.js';
 import { validators } from './validation.js';
+import type { Socket } from 'socket.io';
+import type { SessionUser } from './types/index.js';
 
 export class ChatService {
     // User management
@@ -29,9 +31,9 @@ export class ChatService {
 
         try {
             // Check if user exists
-            const existingUser = await chatDatabase.getUserByUsername(username);
+            const existingUser = await chatDatabase.getUserByEmail(email);
             if (existingUser) {
-                throw new AppError('Username already taken', 409);
+                throw new AppError('Email already registered', 409);
             }
 
             // Create user
@@ -77,7 +79,7 @@ export class ChatService {
                 messageType
             };
 
-            await chatDatabase.saveMessage(message);
+            await chatDatabase.addMessage(message);
             // Return the message with a generated ID (in real app, you'd get the actual ID from DB)
             return { ...message, id: Date.now() };
         } catch (error) {
@@ -143,3 +145,25 @@ export class ChatService {
 }
 
 export const chatService = new ChatService();
+
+export async function initializeServer(): Promise<void> {
+    await chatDatabase.init();
+}
+
+export async function getUserFromSession(socket: Socket): Promise<SessionUser | null> {
+    const session = (socket.request as any).session;
+    if (session && session.user) {
+        return session.user;
+    }
+    return null;
+}
+
+export async function getRoomUsers(roomName: string): Promise<User[]> {
+    try {
+        const users = await chatDatabase.getUsersInRoom(roomName);
+        return users;
+    } catch (error) {
+        console.error(`Error getting users for room ${roomName}:`, error);
+        return [];
+    }
+}

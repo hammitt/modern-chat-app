@@ -102,6 +102,7 @@ export interface SessionUser {
     firstName: string;
     lastName: string;
     avatar?: string;
+    isOnline?: boolean;
 }
 
 // Database row types with proper UUID references

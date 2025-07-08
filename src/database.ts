@@ -200,7 +200,7 @@ class ChatDatabase {
         return rows.map(row => this.mapUserRowToUser(row));
     }
 
-    async updateUserStatus(uuid: string, isOnline: boolean): Promise<void> {
+    async setUserOnlineStatus(uuid: string, isOnline: boolean): Promise<void> {
         if (!this.db) throw new Error('Database not initialized');
 
         await this.db.run(
@@ -225,7 +225,7 @@ class ChatDatabase {
     }
 
     // Message operations
-    async saveMessage(message: Omit<Message, "id">): Promise<void> {
+    async addMessage(message: Omit<Message, "id">): Promise<void> {
         if (!this.db) throw new Error('Database not initialized');
 
         await this.db.run(

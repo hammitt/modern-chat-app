@@ -67,6 +67,19 @@ export class PerformanceMonitor {
     }
 }
 
+export const performanceMonitor = new PerformanceMonitor();
+
+import type { Request, Response, NextFunction } from 'express';
+
+export function performanceMiddleware(req: Request, res: Response, next: NextFunction) {
+    const label = `request:${req.method}-${req.path}`;
+    performanceMonitor.startTimer(label);
+    res.on('finish', () => {
+        performanceMonitor.endTimer(label);
+    });
+    next();
+}
+
 // Memory usage monitoring
 export function logMemoryUsage(): void {
     if (typeof process !== 'undefined' && process.memoryUsage) {
@@ -103,5 +116,3 @@ export function withPerformanceTracking<T extends unknown[], R>(
         }
     };
 }
-
-export const performanceMonitor = new PerformanceMonitor();

@@ -2,6 +2,7 @@
 export interface TestUser {
     id: string;
     name: string;
+    email: string;
     responses: string[];
 }
 
@@ -9,6 +10,7 @@ export const TEST_USERS: TestUser[] = [
     {
         id: 'alice-bot',
         name: 'Alice',
+        email: 'alice@bot.com',
         responses: [
             'Hi there! How can I help you?',
             'That sounds interesting!',
@@ -20,6 +22,7 @@ export const TEST_USERS: TestUser[] = [
     {
         id: 'bob-bot',
         name: 'Bob',
+        email: 'bob@bot.com',
         responses: [
             'Hey! What\'s up?',
             'Sounds good to me.',
@@ -31,6 +34,7 @@ export const TEST_USERS: TestUser[] = [
     {
         id: 'charlie-bot',
         name: 'Charlie',
+        email: 'charlie@bot.com',
         responses: [
             'Hello everyone!',
             'I love discussing technology.',
@@ -49,7 +53,7 @@ export const TEST_ROOMS = [
     'Development'
 ];
 
-export function getBotResponse(user: TestUser, mention?: string): string {
+export function getTestBotResponse(user: TestUser, mention?: string): string {
     const randomResponse = user.responses[Math.floor(Math.random() * user.responses.length)];
 
     if (mention) {
@@ -57,21 +61,4 @@ export function getBotResponse(user: TestUser, mention?: string): string {
     }
 
     return `${user.name}: ${randomResponse}`;
-}
-
-export function getMainBotResponse(msg: string): string | null {
-    const lowerCaseMsg = msg.trim().toLowerCase();
-    if (lowerCaseMsg === "") {
-        return 'Bot: You called? Try asking for "time" or "help".';
-    }
-    if (lowerCaseMsg.includes("hello") || lowerCaseMsg.includes("hi")) {
-        return 'Bot: Hello there! Ask me for the "time" or for "help".';
-    }
-    if (lowerCaseMsg.includes("time")) {
-        return `Bot: The current time is ${new Date().toLocaleTimeString()}.`;
-    }
-    if (lowerCaseMsg.includes("help")) {
-        return 'Bot: I am a simple chatbot. You can say "hi" or ask for the "time".';
-    }
-    return null;
 }

@@ -4,20 +4,26 @@ import { Server } from 'socket.io';
 import type { Socket } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import multer from 'multer';
-import session from 'express-session';
-import rateLimit from 'express-rate-limit';
-import { config } from './config.js';
+import { chatDatabase } from './database.js';
+import {
+    initializeServer,
+    getUserFromSession,
+    getRoomUsers
+} from './chatService.js';
+import { getBotResponse } from './bot.js';
+import { TEST_USERS, getTestBotResponse } from './testEnvironment.js';
 import { errorHandler } from './errorHandler.js';
-import { performanceMonitor } from './performance.js';
+import { performanceMiddleware, performanceMonitor } from './performance.js';
+// import { upload } from './middleware/fileUpload.js';
+import { config } from './config.js';
+import rateLimit from 'express-rate-limit';
+import session from 'express-session';
+import { Events } from './events.js';
+import type { Message, SessionUser } from './types/index.js';
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { Events } from './events.js';
-import { TEST_USERS, TEST_ROOMS, getBotResponse as getTestBotResponse, getMainBotResponse } from './testEnvironment.js';
-import { chatDatabase } from './database.js';
-import type { Message, SessionUser } from './types/index.js';
 
 // Extend socket.data interface
 declare module 'socket.io' {
@@ -50,38 +56,6 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'public/uploads/');
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-const upload = multer({
-    storage: storage,
-    limits: {
-        fileSize: 10 * 1024 * 1024 // 10MB limit
-    },
-    fileFilter: (req, file, cb) => {
-        // Allow images, documents, and common file types
-        const allowedMimes = [
-            'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-            'application/pdf', 'text/plain', 'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        ];
-
-        if (allowedMimes.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('File type not allowed'));
-        }
-    }
-});
-
 // Store room data and user information (keeping in-memory for real-time features)
 interface RoomData {
     users: Set<string>; // Store user UUIDs instead of usernames
@@ -91,37 +65,6 @@ const rooms = new Map<string, RoomData>();
 const connectedUsers = new Map<string, ConnectedUser>(); // key is socket.id
 const typingUsers = new Map<string, Set<string>>(); // room -> set of user UUIDs who are typing
 const typingTimeouts = new Map<string, Map<string, NodeJS.Timeout>>(); // room -> user UUID -> timeout
-
-// Initialize database and default rooms
-async function initializeServer() {
-    try {
-        await chatDatabase.init();
-
-        // Ensure system user exists for creating default rooms
-        let systemUser = await chatDatabase.getUserByEmail('system@chat.app');
-        if (!systemUser) {
-            systemUser = await chatDatabase.createUser({
-                email: 'system@chat.app',
-                username: 'system',
-                firstName: 'System',
-                lastName: 'Bot'
-            });
-        }
-
-        // Create default rooms in database
-        for (const roomName of TEST_ROOMS) {
-            await chatDatabase.createRoom(roomName, `Default ${roomName} room`, systemUser.uuid);
-            rooms.set(roomName, {
-                users: new Set()
-            });
-        }
-
-        console.log('✅ Server initialized with database');
-    } catch (error) {
-        console.error('❌ Failed to initialize server:', error);
-        process.exit(1);
-    }
-}
 
 function getOrCreateRoom(roomName: string): RoomData {
     if (!rooms.has(roomName)) {
@@ -176,6 +119,8 @@ const limiter = rateLimit({
 });
 
 app.use(limiter);
+
+app.use(performanceMiddleware);
 
 // Session middleware with enhanced security
 const sessionMiddleware = session({
@@ -308,36 +253,6 @@ app.post('/api/login-existing', (req, res) => {
         console.error('Async handler error:', error);
         res.status(500).json({ success: false, error: 'Internal server error' });
     });
-});
-
-// File upload endpoint
-app.post('/upload', upload.single('file'), (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
-
-        const fileInfo = {
-            filename: req.file.filename,
-            originalname: req.file.originalname,
-            size: req.file.size,
-            mimetype: req.file.mimetype,
-            url: `/uploads/${req.file.filename}`
-        };
-
-        res.json({
-            success: true,
-            file: fileInfo
-        });
-
-        // Optionally emit file upload to the relevant room
-        // This would require knowing which room the user is in
-        // Could be passed as a form field or handled by the client
-
-    } catch (error) {
-        console.error('File upload error:', error);
-        res.status(500).json({ error: 'File upload failed' });
-    }
 });
 
 // Get room list endpoint
@@ -501,12 +416,8 @@ app.post('/api/rooms/join', (req, res) => {
                 return res.status(401).json({ error: 'Not authenticated' });
             }
 
-            const { roomName } = req.body as { roomName: string };
-            if (!roomName) {
-                return res.status(400).json({ error: 'Room name is required' });
-            }
-
-            await chatDatabase.joinRoom(req.session.user.uuid, roomName);
+            const { roomId } = req.body;
+            await chatDatabase.addUserToRoom(req.session.user.uuid, roomId);
             res.json({ success: true });
         } catch (error) {
             console.error('Error joining room:', error);
@@ -518,58 +429,6 @@ app.post('/api/rooms/join', (req, res) => {
     });
 });
 
-app.post('/api/rooms/leave', (req, res) => {
-    (async () => {
-        try {
-            if (!req.session.user) {
-                return res.status(401).json({ error: 'Not authenticated' });
-            }
-
-            const { roomName } = req.body as { roomName: string };
-            if (!roomName) {
-                return res.status(400).json({ error: 'Room name is required' });
-            }
-
-            await chatDatabase.leaveRoom(req.session.user.uuid, roomName);
-            res.json({ success: true });
-        } catch (error) {
-            console.error('Error leaving room:', error);
-            res.status(500).json({ error: 'Failed to leave room' });
-        }
-    })().catch(error => {
-        console.error('Error leaving room:', error);
-        res.status(500).json({ error: 'Failed to leave room' });
-    });
-});
-
-app.post('/api/rooms/create', (req, res) => {
-    (async () => {
-        try {
-            if (!req.session.user) {
-                return res.status(401).json({ error: 'Not authenticated' });
-            }
-
-            const { name, description } = req.body as {
-                name: string;
-                description?: string;
-                isPublic?: boolean; // Keep for API compatibility but not used
-            };
-            if (!name) {
-                return res.status(400).json({ error: 'Room name is required' });
-            }
-
-            await chatDatabase.createRoom(name, description || '', req.session.user.uuid);
-            res.json({ success: true });
-        } catch (error) {
-            console.error('Error creating room:', error);
-            res.status(500).json({ error: 'Failed to create room' });
-        }
-    })().catch(error => {
-        console.error('Error creating room:', error);
-        res.status(500).json({ error: 'Failed to create room' });
-    });
-});
-
 app.post('/api/rooms/invite', (req, res) => {
     (async () => {
         try {
@@ -577,24 +436,14 @@ app.post('/api/rooms/invite', (req, res) => {
                 return res.status(401).json({ error: 'Not authenticated' });
             }
 
-            const { roomName, username } = req.body as { roomName: string; username: string };
-            if (!roomName || !username) {
-                return res.status(400).json({ error: 'Room name and username are required' });
-            }
+            const { roomId, email } = req.body;
+            const userToInvite = await chatDatabase.getUserByEmail(email); // Assuming username is an email for invite
 
-            // Check if the inviter is in the room
-            const isInRoom = await chatDatabase.isUserInRoom(req.session.user.uuid, roomName);
-            if (!isInRoom) {
-                return res.status(403).json({ error: 'You must be a member of the room to invite others' });
-            }
-
-            // Find the user to invite by username and get their UUID
-            const userToInvite = await chatDatabase.getUserByUsername(username);
             if (!userToInvite) {
-                return res.status(404).json({ error: 'User not found' });
+                return res.status(404).json({ error: 'User to invite not found' });
             }
 
-            await chatDatabase.joinRoom(userToInvite.uuid, roomName, req.session.user.uuid);
+            await chatDatabase.addUserToRoom(userToInvite.uuid, roomId);
             res.json({ success: true });
         } catch (error) {
             console.error('Error inviting user:', error);
@@ -606,441 +455,307 @@ app.post('/api/rooms/invite', (req, res) => {
     });
 });
 
-app.get('/api/session', (req, res) => {
-    if (req.session.user) {
-        res.json({
-            authenticated: true,
-            user: req.session.user
-        });
-    } else {
-        res.json({ authenticated: false });
-    }
+app.use(errorHandler);
+
+// Socket.IO middleware for session handling
+io.use((socket, next) => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    sessionMiddleware(socket.request as any, {} as any, next as any);
 });
 
-initializeServer().catch(error => {
-    console.error("Failed to initialize server:", error);
-    process.exit(1);
-});
-
-io.on(Events.Connection, (socket: Socket) => {
-    console.log('a user connected');
-
-    // For authentication, wait for user_login event
-    const userId = socket.id;
-    let authenticationAttempted = false;
-
-    // Handle user authentication
-    socket.on('user_login', (userData: { username: string }) => {
-        clearTimeout(tempUserTimeout); // Clear timeout immediately when auth starts
-        authenticationAttempted = true;
-        (async () => {
-            try {
-                console.log('Received user_login event for:', userData.username);
-                const user = await chatDatabase.getUserByUsername(userData.username);
-                console.log('User found in database:', user ? 'YES' : 'NO');
+// Main Socket.IO connection handler
+io.on(Events.Connection, (socket) => {
+    (async () => {
+        try {
+            // Authenticate user based on session
+            const sessionUser = await getUserFromSession(socket);
+            if (sessionUser?.uuid) {
+                const user = await chatDatabase.getUserByUuid(sessionUser.uuid);
                 if (user) {
-                    // Update user online status
-                    await chatDatabase.updateUserStatus(user.uuid, true);
+                    socket.data.userUuid = user.uuid;
+                    socket.data.userName = user.username;
 
-                    const connectedUser: ConnectedUser = {
+                    // Add user to connected users list
+                    connectedUsers.set(socket.id, {
                         uuid: user.uuid,
                         username: user.username,
                         firstName: user.firstName,
                         lastName: user.lastName,
                         email: user.email,
                         socketId: socket.id,
-                        currentRoom: 'General'
-                    };
+                        currentRoom: ''
+                    });
 
-                    // Store user data
-                    connectedUsers.set(socket.id, connectedUser);
-                    console.log('User stored in connectedUsers:', user.username, 'UUID:', user.uuid);
+                    // Set user as online
+                    await chatDatabase.setUserOnlineStatus(user.uuid, true);
 
-                    socket.data = { userUuid: user.uuid, userName: user.username, room: 'General' };
-
-                    // Join default room
-                    void socket.join('General');
-                    const room = getOrCreateRoom('General');
-                    room.users.add(user.uuid);
-
-                    // Add user to room membership
-                    await chatDatabase.addUserToRoom(user.uuid, 'General');
-
-                    // Notify others
-                    socket.broadcast.to('General').emit(Events.UserJoined, user.username);
-
-                    // Send recent messages
-                    await sendRecentMessages(socket, 'General');
-
-                    socket.emit('authentication_success', { username: user.username, uuid: user.uuid });
-                } else {
-                    console.log('User not found, sending authentication_failed');
-                    socket.emit('authentication_failed', 'User not found');
-                }
-            } catch (error) {
-                console.error('Authentication error:', error);
-                socket.emit('authentication_failed', 'Authentication failed');
-            }
-        })().catch(console.error);
-    });
-
-    // Only create temp user if no authentication was attempted after a longer delay
-    const tempUserTimeout = setTimeout(() => {
-        if (!connectedUsers.has(socket.id) && !authenticationAttempted) {
-            console.log('Creating temporary user for socket (no auth attempted)', socket.id);
-            const tempUsername = `User${Math.floor(Math.random() * 1000)}`;
-            const tempUuid = `temp-${socket.id}-${Date.now()}`;
-
-            // This is a temporary user, so we'll create a partial ConnectedUser object.
-            const tempUser: ConnectedUser = {
-                uuid: tempUuid,
-                username: tempUsername,
-                firstName: 'Anonymous',
-                lastName: 'User',
-                email: `temp-${socket.id}@chat.app`,
-                socketId: socket.id,
-                currentRoom: 'General'
-            };
-            connectedUsers.set(socket.id, tempUser);
-
-            socket.data = { userUuid: tempUuid, userName: tempUsername, room: 'General' };
-            void socket.join('General');
-
-            const room = getOrCreateRoom('General');
-            room.users.add(tempUuid);
-
-            socket.broadcast.to('General').emit(Events.UserJoined, tempUsername);
-        } else if (connectedUsers.has(socket.id)) {
-            console.log('User already authenticated for socket', socket.id);
-        } else {
-            console.log('Authentication was attempted but failed for socket', socket.id);
-        }
-    }, 10000); // Increased timeout to 10 seconds
-
-    socket.on(Events.Disconnect, () => {
-        (async () => {
-            console.log('user disconnected');
-            const userData = connectedUsers.get(socket.id);
-            if (userData) {
-                // Update user status in database
-                try {
-                    await chatDatabase.updateUserStatus(userData.username, false);
-                } catch (error) {
-                    console.error('Error updating user status:', error);
-                }
-
-                // Remove user from room
-                const roomData = rooms.get(userData.currentRoom);
-                if (roomData) {
-                    roomData.users.delete(userData.uuid);
-                }
-
-                // Remove from typing users
-                const typingInRoom = typingUsers.get(userData.currentRoom);
-                if (typingInRoom) {
-                    typingInRoom.delete(userData.username);
-                    const roomTimeouts = typingTimeouts.get(userData.currentRoom);
-                    if (roomTimeouts) {
-                        const userTimeout = roomTimeouts.get(userData.username);
-                        if (userTimeout) {
-                            clearTimeout(userTimeout);
-                            roomTimeouts.delete(userData.username);
-                        }
-                    }
-                }
-
-                socket.broadcast.to(userData.currentRoom).emit(Events.UserLeft, userData.username);
-                connectedUsers.delete(socket.id);
-            }
-        })().catch(console.error);
-    });
-
-    socket.on(Events.JoinRoom, (newRoom: string) => {
-        (async () => {
-            const userData = connectedUsers.get(socket.id);
-            if (!userData) return;
-
-            const oldRoom = userData.currentRoom;
-
-            // Leave old room
-            void socket.leave(oldRoom);
-            const oldRoomData = rooms.get(oldRoom);
-            if (oldRoomData) {
-                oldRoomData.users.delete(userData.uuid);
-            }
-
-            // Join new room
-            void socket.join(newRoom);
-            const newRoomData = getOrCreateRoom(newRoom);
-            newRoomData.users.add(userData.uuid);
-
-            // Update user data
-            userData.currentRoom = newRoom;
-            socket.data = { userName: userData.username, room: newRoom };
-
-            // Notify rooms
-            socket.broadcast.to(oldRoom).emit(Events.UserLeft, userData.username);
-            socket.broadcast.to(newRoom).emit(Events.UserJoined, userData.username);
-
-            // Send recent messages
-            await sendRecentMessages(socket, newRoom);
-
-            socket.emit(Events.JoinedRoom, newRoom);
-        })().catch(console.error);
-    });
-
-    socket.on(Events.ChatMessage, (msg: string) => {
-        (async () => {
-            const userData = connectedUsers.get(socket.id);
-            if (!userData) return;
-
-            // Input validation and sanitization
-            if (!msg || typeof msg !== 'string') return;
-            const trimmedMsg = msg.trim();
-            if (trimmedMsg === '') return;
-            if (trimmedMsg.length > 1000) {
-                const truncatedMsg = trimmedMsg.substring(0, 1000);
-                msg = truncatedMsg;
-            } else {
-                msg = trimmedMsg;
-            }
-
-            const room = userData.currentRoom;
-            console.log(`message in room ${room}: ${msg}`);
-
-            // Save message to database
-            try {
-                // Ensure user exists in database (should exist but let's be safe)
-                let user = await chatDatabase.getUserByUuid(userData.uuid);
-                if (!user) {
-                    user = await chatDatabase.createUser({
-                        email: userData.email,
-                        username: userData.username,
-                        firstName: userData.firstName,
-                        lastName: userData.lastName
+                    // Notify other clients of the new user
+                    socket.broadcast.emit(Events.UserConnected, {
+                        uuid: user.uuid,
+                        username: user.username,
+                        firstName: user.firstName,
+                        lastName: user.lastName,
+                        avatar: user.avatar,
+                        isOnline: true
                     });
                 }
-
-                // Ensure room exists in database
-                const roomExists = await chatDatabase.getRoomByName(room);
-                if (!roomExists) {
-                    await chatDatabase.createRoom(room, `${room} chat room`, userData.uuid);
-                }
-
-                const messageData: Omit<Message, 'id'> = {
-                    room: room,
-                    user_uuid: userData.uuid,
-                    content: msg,
-                    timestamp: new Date().toISOString(),
-                    messageType: 'text'
-                };
-                await chatDatabase.saveMessage(messageData);
-            } catch (error) {
-                console.error('Error saving message to database:', error);
+            } else {
+                // Handle unauthenticated connection
+                console.log('Unauthenticated user connected');
+                // Optionally disconnect
+                // socket.disconnect();
             }
 
-            // Broadcast the message to the current room
-            io.to(room).emit(Events.ChatMessage, { user: userData, message: msg });
+            console.log(`🔌 User connected: ${socket.id}, authenticated as ${socket.data.userName || 'guest'}`);
 
-            // Handle @mentions
-            const mentionRegex = /@(\w+)/g;
-            const mentions = [...msg.matchAll(mentionRegex)].map(match => match[1]);
+            socket.on(Events.JoinRoom, (roomName: string) => {
+                (async () => {
+                    try {
+                        const userUuid = socket.data.userUuid;
+                        if (!userUuid) return;
 
-            mentions.forEach(mentionedUser => {
-                // Find the mentioned user in active users
-                for (const [socketId, user] of connectedUsers.entries()) {
-                    if (user.username.toLowerCase() === mentionedUser.toLowerCase()) {
-                        io.to(socketId).emit(Events.UserMention, {
-                            from: userData.username,
-                            message: msg,
-                            room: room
+                        // Leave previous room if any
+                        if (socket.data.room) {
+                            socket.leave(socket.data.room);
+                            const roomData = rooms.get(socket.data.room);
+                            if (roomData) {
+                                roomData.users.delete(userUuid);
+                                io.to(socket.data.room).emit(Events.RoomUsers, Array.from(roomData.users));
+                            }
+                        }
+
+                        // Join new room
+                        socket.join(roomName);
+                        socket.data.room = roomName;
+
+                        const roomData = getOrCreateRoom(roomName);
+                        roomData.users.add(userUuid);
+
+                        // Update connected user's current room
+                        const connectedUser = connectedUsers.get(socket.id);
+                        if (connectedUser) {
+                            connectedUser.currentRoom = roomName;
+                        }
+
+                        // Send recent messages to the user
+                        await sendRecentMessages(socket, roomName);
+
+                        // Notify room about the new user
+                        io.to(roomName).emit(Events.UserJoined, {
+                            userUuid,
+                            username: socket.data.userName
                         });
-                        break;
+
+                        // Update room user list
+                        const roomUsers = await getRoomUsers(roomName);
+                        io.to(roomName).emit(Events.RoomUsers, roomUsers);
+
+                    } catch (error) {
+                        console.error(`Error joining room ${roomName}:`, error);
                     }
-                }
+                })().catch(error => console.error('Async error in JoinRoom:', error));
             });
 
-            // Handle bot interactions - only in Test Environment
-            if (room === 'Test Environment') {
-                // Check for @bot trigger
-                const botTrigger = '@bot';
-                if (msg.trim().toLowerCase().startsWith(botTrigger)) {
-                    const command = msg.trim().substring(botTrigger.length);
-                    const botResponse = getMainBotResponse(command);
-                    if (botResponse) {
-                        setTimeout(() => {
-                            (async () => {
-                                // Save bot message to database
-                                try {
-                                    // Create or get bot user with proper UUID
-                                    const botUuid = 'bot-system-uuid';
-                                    let botUser = await chatDatabase.getUserByUuid(botUuid);
-                                    if (!botUser) {
-                                        botUser = await chatDatabase.createUser({
-                                            email: 'bot@chat.app',
-                                            username: 'Bot',
-                                            firstName: 'Chat',
-                                            lastName: 'Bot'
-                                        });
-                                    }
+            socket.on(Events.ChatMessage, (msg: Message) => {
+                (async () => {
+                    try {
+                        const { room, content, messageType, fileName, fileUrl, fileSize } = msg;
+                        const userUuid = socket.data.userUuid;
 
-                                    const botMessageData: Omit<Message, 'id'> = {
-                                        room: room,
-                                        user_uuid: botUser.uuid,
-                                        content: botResponse,
-                                        timestamp: new Date().toISOString(),
-                                        messageType: 'text'
-                                    };
-                                    await chatDatabase.saveMessage(botMessageData);
+                        if (!userUuid || !room) {
+                            return; // Ignore messages from users not in a room
+                        }
 
-                                    io.to(room).emit(Events.ChatMessage, { user: botUser, message: botResponse });
-                                } catch (error) {
-                                    console.error('Error saving bot message:', error);
-                                }
-                            })().catch(console.error);
-                        }, 500 + (Math.random() * 500));
-                    }
-                }
+                        const user = await chatDatabase.getUserByUuid(userUuid);
+                        if (!user) {
+                            return; // Ignore messages from unknown users
+                        }
 
-                // Random test user responses (simulate activity)
-                if (Math.random() < 0.3) { // 30% chance
-                    const randomUser = TEST_USERS[Math.floor(Math.random() * TEST_USERS.length)];
-                    const mentionedBot = mentions.includes('bot') || mentions.includes(randomUser.name);
-                    const response = getTestBotResponse(randomUser, mentionedBot ? userData.username : undefined);
-
-                    setTimeout(() => {
-                        (async () => {
-                            // Save test user message to database
-                            try {
-                                // Find the test user by username and get their UUID
-                                const testUser = await chatDatabase.getUserByUsername(randomUser.name);
-                                if (testUser) {
-                                    const testMessageData: Omit<Message, 'id'> = {
-                                        room: room,
-                                        user_uuid: testUser.uuid,
-                                        content: response,
-                                        timestamp: new Date().toISOString(),
-                                        messageType: 'text'
-                                    };
-                                    await chatDatabase.saveMessage(testMessageData);
-                                    io.to(room).emit(Events.ChatMessage, { user: testUser, message: response });
-                                }
-                            } catch (error) {
-                                console.error('Error saving test message:', error);
+                        const newMessage: Message = {
+                            user_uuid: userUuid,
+                            room,
+                            content,
+                            timestamp: new Date().toISOString(),
+                            messageType: messageType || 'text',
+                            fileName,
+                            fileUrl,
+                            fileSize,
+                            user: {
+                                uuid: user.uuid,
+                                username: user.username,
+                                firstName: user.firstName,
+                                lastName: user.lastName,
+                                avatar: user.avatar
                             }
-                        })().catch(console.error);
-                    }, 1000 + (Math.random() * 2000));
+                        };
+
+                        // Save message to database
+                        await chatDatabase.addMessage(newMessage);
+
+                        // Broadcast message to the room
+                        io.to(room).emit(Events.ChatMessage, newMessage);
+
+                        // Handle bot responses for test environment
+                        if (room === 'Test Environment') {
+                            if (TEST_USERS.length > 0) {
+                                const randomUser = TEST_USERS[Math.floor(Math.random() * TEST_USERS.length)];
+                                const testUser = await chatDatabase.getUserByEmail(randomUser.email);
+
+                                if (testUser) {
+                                    const botMessage: Message = {
+                                        user_uuid: testUser.uuid,
+                                        room,
+                                        content: getTestBotResponse(randomUser, socket.data.userName),
+                                        timestamp: new Date().toISOString(),
+                                        messageType: 'text',
+                                        user: {
+                                            uuid: testUser.uuid,
+                                            username: testUser.username,
+                                            firstName: testUser.firstName,
+                                            lastName: testUser.lastName,
+                                            avatar: testUser.avatar
+                                        }
+                                    };
+                                    await chatDatabase.addMessage(botMessage);
+                                    io.to(room).emit(Events.ChatMessage, botMessage);
+                                }
+                            }
+                        }
+
+                        // Handle main bot response
+                        const mainBotResponse = getBotResponse(content);
+                        if (mainBotResponse) {
+                            const systemUser = await chatDatabase.getUserByEmail('system@chat.app');
+                            if (systemUser) {
+                                const botMessage: Message = {
+                                    user_uuid: systemUser.uuid,
+                                    room,
+                                    content: mainBotResponse,
+                                    timestamp: new Date().toISOString(),
+                                    messageType: 'system',
+                                    user: {
+                                        uuid: systemUser.uuid,
+                                        username: systemUser.username,
+                                        firstName: systemUser.firstName,
+                                        lastName: systemUser.lastName,
+                                        avatar: systemUser.avatar
+                                    }
+                                };
+                                await chatDatabase.addMessage(botMessage);
+                                io.to(room).emit(Events.ChatMessage, botMessage);
+                            }
+                        }
+
+                    } catch (error) {
+                        console.error('Error handling chat message:', error);
+                    }
+                })().catch(error => console.error('Async error in ChatMessage:', error));
+            });
+
+            socket.on(Events.Typing, (room: string) => {
+                const userUuid = socket.data.userUuid;
+                if (!userUuid) return;
+
+                if (!typingUsers.has(room)) {
+                    typingUsers.set(room, new Set());
                 }
-            }
-        })().catch(console.error);
-    });
+                typingUsers.get(room)!.add(userUuid);
 
-    socket.on(Events.Typing, () => {
-        const userData = connectedUsers.get(userId);
-        if (!userData) return;
-
-        const room = userData.currentRoom;
-
-        // Add user to typing users for this room
-        if (!typingUsers.has(room)) {
-            typingUsers.set(room, new Set());
-        }
-        if (!typingTimeouts.has(room)) {
-            typingTimeouts.set(room, new Map());
-        }
-
-        const typingInRoom = typingUsers.get(room)!;
-        const roomTimeouts = typingTimeouts.get(room)!;
-
-        // Clear existing timeout for this user
-        const existingTimeout = roomTimeouts.get(userData.username);
-        if (existingTimeout) {
-            clearTimeout(existingTimeout);
-        }
-
-        // Add user to typing list
-        typingInRoom.add(userData.username);
-
-        // Broadcast to the current room, except the sender
-        socket.broadcast.to(room).emit(Events.Typing, userData.username);
-
-        // Set new timeout to remove user from typing after delay
-        const timeout = setTimeout(() => {
-            typingInRoom.delete(userData.username);
-            roomTimeouts.delete(userData.username);
-            // Broadcast stop typing to the room
-            socket.broadcast.to(room).emit(Events.StopTyping, userData.username);
-        }, 3000);
-
-        roomTimeouts.set(userData.username, timeout);
-    });
-
-    socket.on(Events.StopTyping, () => {
-        const userData = connectedUsers.get(userId);
-        if (!userData) return;
-
-        const room = userData.currentRoom;
-        const typingInRoom = typingUsers.get(room);
-        const roomTimeouts = typingTimeouts.get(room);
-
-        if (typingInRoom && typingInRoom.has(userData.username)) {
-            typingInRoom.delete(userData.username);
-
-            // Clear timeout
-            if (roomTimeouts) {
-                const userTimeout = roomTimeouts.get(userData.username);
-                if (userTimeout) {
-                    clearTimeout(userTimeout);
-                    roomTimeouts.delete(userData.username);
+                if (!typingTimeouts.has(room)) {
+                    typingTimeouts.set(room, new Map());
                 }
-            }
 
-            // Broadcast stop typing to the room
-            socket.broadcast.to(room).emit(Events.StopTyping, userData.username);
+                // Clear previous timeout if any
+                if (typingTimeouts.get(room)!.has(userUuid)) {
+                    clearTimeout(typingTimeouts.get(room)!.get(userUuid)!);
+                }
+
+                // Set a new timeout to remove user from typing list
+                const timeout = setTimeout(() => {
+                    if (typingUsers.has(room)) {
+                        typingUsers.get(room)!.delete(userUuid);
+                        io.to(room).emit(Events.Typing, Array.from(typingUsers.get(room)!));
+                    }
+                }, 3000); // 3 seconds
+
+                typingTimeouts.get(room)!.set(userUuid, timeout);
+
+                io.to(room).emit(Events.Typing, Array.from(typingUsers.get(room)!));
+            });
+
+            socket.on(Events.Disconnect, () => {
+                (async () => {
+                    try {
+                        const userUuid = socket.data.userUuid;
+                        if (userUuid) {
+                            // Remove user from room
+                            const roomName = socket.data.room;
+                            if (roomName) {
+                                const roomData = rooms.get(roomName);
+                                if (roomData) {
+                                    roomData.users.delete(userUuid);
+                                    io.to(roomName).emit(Events.RoomUsers, Array.from(roomData.users));
+                                }
+                            }
+
+                            // Remove from connected users
+                            connectedUsers.delete(socket.id);
+
+                            // Set user as offline
+                            await chatDatabase.setUserOnlineStatus(userUuid, false);
+
+                            // Notify other clients
+                            socket.broadcast.emit(Events.UserDisconnected, { uuid: userUuid });
+                        }
+                        console.log(`🔌 User disconnected: ${socket.id}`);
+                    } catch (error) {
+                        console.error('Error on disconnect:', error);
+                    }
+                })().catch(error => console.error('Async error in Disconnect:', error));
+            });
+
+        } catch (error) {
+            console.error('Error in socket connection handler:', error);
         }
-    });
-
-    socket.on(Events.GetRooms, () => {
-        socket.emit(Events.RoomsList, Array.from(rooms.keys()));
-    });
-
-    socket.on(Events.GetUsers, () => {
-        (async () => {
-            const userData = connectedUsers.get(socket.id);
-            if (!userData) return;
-
-            const room = userData.currentRoom;
-            const roomData = rooms.get(room);
-            const userUuidsInRoom = roomData ? Array.from(roomData.users) : [];
-
-            // Get full user objects by UUIDs
-            const usersInRoom = await chatDatabase.getUsersByUuids(userUuidsInRoom);
-
-            socket.emit(Events.UsersList, usersInRoom);
-        })().catch(console.error);
-    });
-
-    socket.on(Events.GetUserInfo, () => {
-        const userData = connectedUsers.get(userId);
-        if (!userData) return;
-
-        // Emit user info
-        socket.emit(Events.UserInfo, userData);
-    });
+    })().catch(error => console.error('Async error in connection handler:', error));
 });
 
-// Add error handling middleware (must be last)
-app.use(errorHandler);
+const PORT = process.env.PORT || 3000;
 
-server.listen(config.port, () => {
-    console.log(`🚀 Server running on port ${config.port}`);
-    console.log(`📱 Chat app available at: \x1b[36mhttp://localhost:${config.port}\x1b[0m`);
-    console.log(`📋 Login page: \x1b[36mhttp://localhost:${config.port}/\x1b[0m`);
-    console.log(`💬 Chat page: \x1b[36mhttp://localhost:${config.port}/chat\x1b[0m`);
-
-    // Log memory usage in development
-    if (!config.isProduction) {
-        console.log(`🔧 Development mode - Performance monitoring enabled`);
+// Graceful shutdown
+const gracefulShutdown = () => {
+    console.log('Server is shutting down...');
+    // Cleanly close the server and database connection
+    io.close();
+    server.close(() => {
+        chatDatabase.close();
         performanceMonitor.logMetrics();
+        console.log('Server has been shut down.');
+        process.exit(0);
+    });
+
+    // Force shutdown after a timeout
+    setTimeout(() => {
+        console.error('Could not close connections in time, forcefully shutting down');
+        process.exit(1);
+    }, 10000);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+// Initialize and start the server
+(async () => {
+    try {
+        await initializeServer();
+        server.listen(PORT, () => {
+            console.log(`✅ Server is running on http://localhost:${PORT}`);
+        });
+    } catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
     }
+})().catch(error => {
+    console.error('❌ Unhandled error during server startup:', error);
+    process.exit(1);
 });
