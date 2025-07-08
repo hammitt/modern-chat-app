@@ -128,8 +128,6 @@ function getOrCreateRoom(roomName: string): RoomData {
         rooms.set(roomName, {
             users: new Set()
         });
-        // Create room in database asynchronously
-        void chatDatabase.createRoom(roomName, '', 'system').catch(console.error);
     }
     return rooms.get(roomName)!;
 }
@@ -138,28 +136,9 @@ function getOrCreateRoom(roomName: string): RoomData {
 async function sendRecentMessages(socket: Socket, roomName: string, limit: number = 50): Promise<void> {
     try {
         const messages = await chatDatabase.getRecentMessages(roomName, limit);
-
-        // Batch fetch user data for all message authors
-        const userUuids = [...new Set(messages.map(msg => msg.user_uuid))];
-        const users = await chatDatabase.getUsersByUuids(userUuids);
-        const userMap = new Map(users.map(user => [user.uuid, user]));
-
-        // Send messages with enriched user data
+        // Messages from getRecentMessages already contain the user object.
         for (const msg of messages) {
-            const user = userMap.get(msg.user_uuid);
-            if (user) {
-                socket.emit(Events.ChatMessage, {
-                    ...msg,
-                    user: {
-                        username: user.username,
-                        firstName: user.firstName,
-                        lastName: user.lastName,
-                        avatar: user.avatar
-                    }
-                });
-            } else {
-                socket.emit(Events.ChatMessage, msg.content);
-            }
+            socket.emit(Events.ChatMessage, msg);
         }
     } catch (error) {
         console.error('Error loading recent messages:', error);
@@ -223,7 +202,7 @@ app.get('/chat', (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'public', 'chat.html'));
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/register', (req, res) => {
     const asyncHandler = async () => {
         const { firstName, lastName, username, email } = req.body as {
             firstName: string;
@@ -408,8 +387,8 @@ app.get('/api/search', (req, res) => {
             }
 
             const messages = await chatDatabase.searchMessages(
-                room as string,
                 query as string,
+                room as string,
                 parseInt(limit as string) || 20
             );
             res.json(messages);
@@ -435,10 +414,11 @@ app.get('/api/users/search', (req, res) => {
 
             const users = await chatDatabase.searchUsers(q);
             const userSuggestions = users.map(user => ({
+                uuid: user.uuid,
                 username: user.username,
-                fullName: `${user.firstName} ${user.lastName}`,
                 firstName: user.firstName,
                 lastName: user.lastName,
+                avatar: user.avatar,
                 isOnline: user.isOnline
             }));
 
@@ -459,10 +439,11 @@ app.get('/api/users', (req, res) => {
         try {
             const users = await chatDatabase.getAllUsers();
             const userList = users.map(user => ({
+                uuid: user.uuid,
                 username: user.username,
-                fullName: `${user.firstName} ${user.lastName}`,
                 firstName: user.firstName,
                 lastName: user.lastName,
+                avatar: user.avatar,
                 isOnline: user.isOnline,
                 lastSeen: user.lastSeen
             }));

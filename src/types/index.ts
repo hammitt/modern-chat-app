@@ -24,9 +24,6 @@ export interface Message {
     fileName?: string;
     fileUrl?: string;
     fileSize?: number;
-    file_path?: string;
-    file_name?: string;
-    file_size?: number;
     edited?: boolean;
     editedAt?: string;
     // Populated user data for display
@@ -46,9 +43,6 @@ export interface Room {
     createdAt?: string;
     createdBy?: string;    // User UUID who created the room
     isPublic?: boolean;
-    is_private?: boolean;
-    created_by?: string;   // Deprecated - use createdBy
-    created_at?: string;
 }
 
 export interface FileUpload {
@@ -77,7 +71,7 @@ export interface ApiResponse<T = unknown> {
 }
 
 export interface SocketEventData {
-    userName?: string;
+    userUuid?: string;
     room?: string;
     message?: string;
     [key: string]: unknown;

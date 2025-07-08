@@ -8,7 +8,7 @@ interface ClientState {
     currentUser: User | null;
     isAuthenticated: boolean;
     currentRoom: string;
-    typingUsers: Set<string>;
+    typingUsers: Set<string>; // This will store user UUIDs
     isTyping: boolean;
     mentionUsers: User[];
     isMentioning: boolean;
@@ -30,7 +30,7 @@ class StateManager {
             currentUser: null,
             isAuthenticated: false,
             currentRoom: "General",
-            typingUsers: new Set<string>(),
+            typingUsers: new Set<string>(), // This will store user UUIDs
             isTyping: false,
             mentionUsers: [],
             isMentioning: false,
@@ -75,15 +75,15 @@ class StateManager {
     }
 
     // Helper methods for common operations
-    addTypingUser(username: string): void {
+    addTypingUser(uuid: string): void {
         const typingUsers = new Set(this.state.typingUsers);
-        typingUsers.add(username);
+        typingUsers.add(uuid);
         this.set('typingUsers', typingUsers);
     }
 
-    removeTypingUser(username: string): void {
+    removeTypingUser(uuid: string): void {
         const typingUsers = new Set(this.state.typingUsers);
-        typingUsers.delete(username);
+        typingUsers.delete(uuid);
         this.set('typingUsers', typingUsers);
     }
 
@@ -168,8 +168,8 @@ async function checkAuthStatus() {
         const response = await fetch('/api/session');
         const result = await response.json() as { authenticated: boolean; user?: User };
 
-        if (result.authenticated) {
-            stateManager.set('currentUser', result.user || null);
+        if (result.authenticated && result.user) {
+            stateManager.set('currentUser', result.user);
             stateManager.set('isAuthenticated', true);
             console.log('User authenticated and set in state:', result.user);
 
@@ -180,16 +180,14 @@ async function checkAuthStatus() {
                 console.log('Socket connecting after authentication...');
 
                 // Send login event once when connected
-                if (result.user) {
-                    socket.once('connect', () => {
-                        console.log('Socket connected, sending user_login event for:', result.user?.username);
-                        socket.emit(Events.UserLogin, { username: result.user!.username });
-                    });
-                }
-            } else if (result.user) {
+                socket.once('connect', () => {
+                    console.log('Socket connected, sending user_login event for:', result.user?.uuid);
+                    socket.emit(Events.UserLogin, { userUuid: result.user!.uuid });
+                });
+            } else {
                 // Already connected, send login event immediately
-                console.log('Socket already connected, sending user_login event for:', result.user.username);
-                socket.emit(Events.UserLogin, { username: result.user.username });
+                console.log('Socket already connected, sending user_login event for:', result.user.uuid);
+                socket.emit(Events.UserLogin, { userUuid: result.user.uuid });
             }
         } else {
             // Redirect to login if not authenticated
@@ -204,11 +202,11 @@ async function checkAuthStatus() {
 }
 
 // Handle successful authentication from socket
-stateManager.get('socket').on(Events.AuthenticationSuccess, (data: { username: string }) => {
-    console.log('Socket authentication successful:', data.username);
+stateManager.get('socket').on(Events.AuthenticationSuccess, (data: { userUuid: string }) => {
+    console.log('Socket authentication successful for user UUID:', data.userUuid);
     // Update the state to reflect successful authentication
     const currentUser = stateManager.get('currentUser');
-    if (currentUser) {
+    if (currentUser && currentUser.uuid === data.userUuid) {
         console.log('Authentication confirmed for user:', currentUser.username);
     }
 });
@@ -271,41 +269,46 @@ function setActiveRoomButton(room: string) {
 function updateTypingIndicator() {
     if (!typingIndicator) return;
 
-    console.log('Updating typing indicator. Users typing:', Array.from(state.typingUsers));
+    const typingUuids = stateManager.get('typingUsers');
+    const userCache = stateManager.get('userCache');
+    const currentUser = stateManager.get('currentUser');
 
-    if (state.typingUsers.size === 0) {
+    // Filter out the current user from the typing list
+    const otherTypingUuids = Array.from(typingUuids).filter(uuid => uuid !== currentUser?.uuid);
+
+    if (otherTypingUuids.length === 0) {
         typingIndicator.textContent = "";
         typingIndicator.style.display = "none";
-        console.log('Hiding typing indicator');
-    } else if (state.typingUsers.size === 1) {
-        const message = `💬 ${Array.from(state.typingUsers)[0]} is typing...`;
-        typingIndicator.textContent = message;
-        typingIndicator.style.display = "flex";
-        console.log('Showing typing indicator:', message);
     } else {
-        const message = `💬 ${state.typingUsers.size} people are typing...`;
-        typingIndicator.textContent = message;
+        const names = otherTypingUuids.map(uuid => userCache.get(uuid)?.username || 'Someone');
+        if (names.length === 1) {
+            typingIndicator.textContent = `💬 ${names[0]} is typing...`;
+        } else if (names.length === 2) {
+            typingIndicator.textContent = `💬 ${names[0]} and ${names[1]} are typing...`;
+        } else {
+            typingIndicator.textContent = `💬 Several people are typing...`;
+        }
         typingIndicator.style.display = "flex";
-        console.log('Showing typing indicator:', message);
     }
 }
 
 function switchRoom(newRoom: string) {
-    if (newRoom === state.currentRoom) return;
+    const state = stateManager; // Use stateManager directly
+    if (newRoom === state.get('currentRoom')) return;
 
     // Stop typing when switching rooms
     clearTimeout(typingTimer);
-    if (state.isTyping) {
-        state.socket.emit(Events.StopTyping);
-        state.isTyping = false;
+    if (state.get('isTyping')) {
+        state.get('socket').emit(Events.StopTyping, { room: state.get('currentRoom') });
+        state.set('isTyping', false);
     }
 
-    state.socket.emit(Events.JoinRoom, newRoom);
-    state.currentRoom = newRoom;
+    state.get('socket').emit(Events.JoinRoom, { room: newRoom });
+    state.set('currentRoom', newRoom);
 
     // Clear messages and typing indicators
     if (messages) messages.innerHTML = "";
-    state.typingUsers.clear();
+    state.set('typingUsers', new Set());
     updateTypingIndicator();
     setActiveRoomButton(newRoom);
 
@@ -313,7 +316,7 @@ function switchRoom(newRoom: string) {
     closeSidebar();
 
     // Request users in the new room
-    state.socket.emit(Events.GetUsers);
+    state.get('socket').emit(Events.GetUsers);
 }
 
 function createRoom() {
@@ -437,7 +440,7 @@ async function uploadFile(file: File) {
     try {
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('room', state.currentRoom);
+        formData.append('room', stateManager.get('currentRoom'));
 
         const response = await fetch('/upload', {
             method: 'POST',
@@ -455,8 +458,14 @@ async function uploadFile(file: File) {
             removeUploadProgress();
 
             // Send file message through socket
-            const fileMessage = createFileMessage(file.name, result.file);
-            state.socket.emit(Events.ChatMessage, fileMessage);
+            const fileMessage = {
+                room: stateManager.get('currentRoom'),
+                messageType: 'file',
+                fileName: result.file.originalName,
+                fileUrl: result.file.url,
+                fileSize: result.file.size,
+            };
+            stateManager.get('socket').emit(Events.ChatMessage, fileMessage);
         } else {
             removeUploadProgress();
             alert('File upload failed: ' + result.error);
@@ -468,9 +477,15 @@ async function uploadFile(file: File) {
     }
 }
 
-function createFileMessage(originalName: string, fileInfo: { filename: string; size: number; mimetype: string }): string {
+function createFileMessage(originalName: string, fileInfo: { filename: string; size: number; mimetype: string; url: string; }): Partial<Message> {
     // Create a special file message format that the server can recognize
-    return `[FILE:${fileInfo.filename}:${originalName}:${fileInfo.size}:${fileInfo.mimetype}]`;
+    return {
+        messageType: 'file',
+        fileName: originalName,
+        fileUrl: fileInfo.url,
+        fileSize: fileInfo.size,
+        content: `File: ${originalName}`
+    };
 }
 
 function parseFileMessage(content: string): {
@@ -502,224 +517,279 @@ function parseFileMessage(content: string): {
     return { isFile: false };
 }
 
-function formatFileSize(bytes: number): string {
-    if (bytes === 0) return '0 Bytes';
+function addMessage(msg: Message) {
+    if (!messages) return;
 
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const item = document.createElement('li');
+    item.classList.add('message-item');
 
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    const user = msg.user || stateManager.get('userCache').get(msg.user_uuid);
+    const isCurrentUser = msg.user_uuid === stateManager.get('currentUser')?.uuid;
+
+    if (msg.messageType === 'system') {
+        item.classList.add('system-message');
+        item.textContent = msg.content;
+    } else if (user) {
+        item.classList.toggle('current-user', isCurrentUser);
+        item.setAttribute('data-user-uuid', msg.user_uuid);
+
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.textContent = user.username.charAt(0).toUpperCase();
+        if (user.avatar) {
+            avatar.style.backgroundImage = `url(${user.avatar})`;
+        }
+
+        const messageBody = document.createElement('div');
+        messageBody.className = 'message-body';
+
+        const messageHeader = document.createElement('div');
+        messageHeader.className = 'message-header';
+        messageHeader.textContent = `${user.firstName} ${user.lastName}`;
+
+        const messageContent = document.createElement('div');
+        messageContent.className = 'message-content';
+
+        if (msg.messageType === 'file' && msg.fileName && msg.fileUrl) {
+            messageContent.appendChild(createFileMessageElement(msg, user.username));
+        } else {
+            messageContent.textContent = msg.content;
+        }
+        
+        const messageTimestamp = document.createElement('div');
+        messageTimestamp.className = 'message-timestamp';
+        messageTimestamp.textContent = new Date(msg.timestamp).toLocaleTimeString();
+
+        messageBody.appendChild(messageHeader);
+        messageBody.appendChild(messageContent);
+        messageBody.appendChild(messageTimestamp);
+        
+        item.appendChild(avatar);
+        item.appendChild(messageBody);
+
+    } else {
+        // Fallback for messages from unknown users
+        item.textContent = `${msg.content}`;
+    }
+
+    messages.appendChild(item);
+    scrollToBottom();
 }
 
-function getFileExtension(filename: string): string {
-    return filename.split('.').pop()?.toUpperCase() || 'FILE';
-}
-
-function isImageFile(mimetype: string): boolean {
-    return mimetype.startsWith('image/');
-}
-
-function createFileMessageElement(fileData: {
-    filename: string;
-    originalName: string;
-    size: number;
-    mimetype: string;
-    url: string;
-}, _username: string): HTMLElement {
+function createFileMessageElement(msg: Message, username: string): HTMLElement {
     const fileElement = document.createElement('div');
     fileElement.className = 'file-message';
 
-    const fileIcon = getFileExtension(fileData.originalName);
-    const fileSize = formatFileSize(fileData.size);
+    const fileLink = document.createElement('a');
+    fileLink.href = msg.fileUrl!;
+    fileLink.target = '_blank';
+    fileLink.rel = 'noopener noreferrer';
+    fileLink.textContent = msg.fileName || 'Download File';
 
-    let fileContent = `
+    const fileSize = msg.fileSize ? `(${(msg.fileSize / 1024).toFixed(2)} KB)` : '';
+
+    fileElement.innerHTML = `
+        <div class="file-icon">📄</div>
         <div class="file-info">
-            <div class="file-icon">${fileIcon}</div>
-            <div class="file-details">
-                <div class="file-name">${fileData.originalName}</div>
-                <div class="file-size">${fileSize}</div>
-            </div>
+            <div class="file-name">${fileLink.outerHTML}</div>
+            <div class="file-size">${fileSize}</div>
         </div>
-        <a href="${fileData.url}" class="file-download" download="${fileData.originalName}">
-            Download
-        </a>
     `;
-
-    // Add image preview for image files
-    if (isImageFile(fileData.mimetype)) {
-        fileContent += `
-            <img src="${fileData.url}" alt="${fileData.originalName}" class="image-preview" 
-                 onclick="window.open('${fileData.url}', '_blank')">
-        `;
-    }
-
-    fileElement.innerHTML = fileContent;
-
     return fileElement;
-}
-
-// Mention autocomplete functionality
-async function fetchUsers(): Promise<void> {
-    try {
-        const response = await fetch('/api/users');
-        if (response.ok) {
-            state.mentionUsers = await response.json() as User[];
-        }
-    } catch (error) {
-        console.error('Error fetching users:', error);
-    }
-}
-
-async function _searchUsers(query: string): Promise<User[]> {
-    try {
-        const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
-        const result = await response.json() as { success: boolean; users?: User[]; error?: string };
-
-        if (result.success) {
-            return result.users || [];
-        } else {
-            console.error('Error searching users:', result.error);
-            return [];
-        }
-    } catch (error) {
-        console.error('Error searching users:', error);
-        return [];
-    }
-}
-
-async function getAllUsers(): Promise<User[]> {
-    try {
-        const response = await fetch('/api/users');
-        const result = await response.json() as { success: boolean; users?: User[]; error?: string };
-
-        if (result.success) {
-            state.mentionUsers = result.users || [];
-            return result.users || [];
-        } else {
-            console.error('Error getting users:', result.error);
-            return [];
-        }
-    } catch (error) {
-        console.error('Error getting users:', error);
-        return [];
-    }
 }
 
 function showMentionDropdown(users: User[], query: string) {
     if (!mentionDropdown || !input) return;
 
-    // Filter users based on query
-    const filteredUsers = users.filter(user =>
-        user.username.toLowerCase().includes(query.toLowerCase()) ||
-        `${user.firstName} ${user.lastName}`.toLowerCase().includes(query.toLowerCase())
-    );
-
-    if (filteredUsers.length === 0) {
+    mentionDropdown.innerHTML = '';
+    if (users.length === 0) {
         hideMentionDropdown();
         return;
     }
 
-    // Create dropdown content
-    mentionDropdown.innerHTML = '';
-    state.selectedMentionIndex = -1;
-
-    filteredUsers.forEach((user, _index) => {
+    users.forEach((user, index) => {
         const item = document.createElement('div');
         item.className = 'mention-item';
-        item.innerHTML = `
-            <span class="mention-username">@${user.username}</span>
-            <span class="mention-name">${user.firstName} ${user.lastName}</span>
-        `;
-
-        item.addEventListener('click', () => {
-            insertMention(user.username);
-        });
-
+        if (index === stateManager.get('selectedMentionIndex')) {
+            item.classList.add('selected');
+        }
+        item.textContent = `${user.firstName} ${user.lastName} (@${user.username})`;
+        item.onclick = () => selectMention(user);
         mentionDropdown.appendChild(item);
     });
 
-    // Position dropdown above input
-    const inputRect = input.getBoundingClientRect();
+    const rect = input.getBoundingClientRect();
     mentionDropdown.style.display = 'block';
-    mentionDropdown.style.left = inputRect.left + 'px';
-    mentionDropdown.style.bottom = (window.innerHeight - inputRect.top + 10) + 'px';
-    mentionDropdown.style.width = inputRect.width + 'px';
+    mentionDropdown.style.left = `${rect.left}px`;
+    mentionDropdown.style.top = `${rect.bottom}px`;
 }
 
 function hideMentionDropdown() {
     if (mentionDropdown) {
         mentionDropdown.style.display = 'none';
-        mentionDropdown.innerHTML = '';
     }
-    state.isMentioning = false;
-    state.selectedMentionIndex = -1;
+    stateManager.set('isMentioning', false);
 }
 
-function insertMention(username: string) {
+function selectMention(user: User) {
     if (!input) return;
-
-    const currentValue = input.value;
-    const beforeMention = currentValue.substring(0, state.mentionStartPosition);
-    const afterMention = currentValue.substring(input.selectionStart || state.mentionStartPosition);
-
-    const newValue = beforeMention + `@${username} ` + afterMention;
-    input.value = newValue;
-
-    // Set cursor position after the mention
-    const newCursorPos = beforeMention.length + username.length + 2; // +2 for "@" and space
-    input.setSelectionRange(newCursorPos, newCursorPos);
-
-    hideMentionDropdown();
+    const start = stateManager.get('mentionStartPosition');
+    const currentText = input.value;
+    const newText = `${currentText.substring(0, start)}@${user.username} `;
+    input.value = newText;
     input.focus();
+    hideMentionDropdown();
 }
 
 function handleMentionNavigation(e: KeyboardEvent): boolean {
-    if (!mentionDropdown || mentionDropdown.style.display === 'none') return false;
+    if (!stateManager.get('isMentioning')) return false;
 
-    const items = mentionDropdown.querySelectorAll('.mention-item');
-    if (items.length === 0) return false;
+    const items = mentionDropdown?.querySelectorAll('.mention-item');
+    if (!items || items.length === 0) return false;
 
-    switch (e.key) {
-        case 'ArrowDown':
-            e.preventDefault();
-            state.selectedMentionIndex = Math.min(state.selectedMentionIndex + 1, items.length - 1);
-            updateMentionSelection(items);
-            return true;
-        case 'ArrowUp':
-            e.preventDefault();
-            state.selectedMentionIndex = Math.max(state.selectedMentionIndex - 1, 0);
-            updateMentionSelection(items);
-            return true;
-        case 'Enter':
-            e.preventDefault();
-            if (state.selectedMentionIndex >= 0 && state.selectedMentionIndex < items.length) {
-                const selectedItem = items[state.selectedMentionIndex];
-                const username = selectedItem.querySelector('.mention-username')?.textContent?.substring(1); // Remove @
-                if (username) {
-                    insertMention(username);
-                }
+    let index = stateManager.get('selectedMentionIndex');
+
+    if (e.key === 'ArrowDown') {
+        index++;
+        if (index >= items.length) index = 0;
+        e.preventDefault();
+    } else if (e.key === 'ArrowUp') {
+        index--;
+        if (index < 0) index = items.length - 1;
+        e.preventDefault();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+        if (index > -1) {
+            const selectedUser = stateManager.get('mentionUsers')[index];
+            if (selectedUser) {
+                selectMention(selectedUser);
             }
-            return true;
-        case 'Escape':
-            e.preventDefault();
-            hideMentionDropdown();
-            return true;
+        }
+        e.preventDefault();
+        return true;
+    } else {
+        return false;
     }
-
-    return false;
+    
+    stateManager.set('selectedMentionIndex', index);
+    showMentionDropdown(stateManager.get('mentionUsers'), stateManager.get('mentionQuery'));
+    return true;
 }
 
-function updateMentionSelection(items: NodeListOf<Element>) {
-    items.forEach((item, index) => {
-        if (index === state.selectedMentionIndex) {
-            item.classList.add('selected');
-        } else {
-            item.classList.remove('selected');
+async function fetchUsers(query: string): Promise<User[]> {
+    try {
+        const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch users');
+        }
+        return await response.json() as User[];
+    } catch (error) {
+        console.error('Error fetching users for mention:', error);
+        return [];
+    }
+}
+
+async function getAllUsers(): Promise<void> {
+    try {
+        const response = await fetch('/api/users');
+        if (!response.ok) {
+            throw new Error('Failed to fetch all users');
+        }
+        const users = await response.json() as User[];
+        updateUsersList(users);
+    } catch (error) {
+        console.error('Error fetching all users:', error);
+    }
+}
+
+// #endregion
+
+// #region Socket Event Handlers
+function setupSocketListeners() {
+    const socket = stateManager.get('socket');
+
+    socket.on('connect', () => {
+        console.log('Socket connected with id:', socket.id);
+        stateManager.set('connectionStatus', 'connected');
+        const currentUser = stateManager.get('currentUser');
+        if (currentUser) {
+            socket.emit(Events.UserLogin, { userUuid: currentUser.uuid });
         }
     });
-}
 
+    socket.on('disconnect', () => {
+        console.log('Socket disconnected');
+        stateManager.set('connectionStatus', 'disconnected');
+    });
+
+    socket.on(Events.ChatMessage, (msg: Message) => {
+        console.log('Received message:', msg);
+        addMessage(msg);
+        stateManager.cacheMessage(msg.room, msg);
+    });
+
+    socket.on(Events.Typing, (data: { user: User }) => {
+        if (data.user.uuid !== stateManager.get('currentUser')?.uuid) {
+            stateManager.addTypingUser(data.user.uuid);
+            stateManager.get('userCache').set(data.user.uuid, data.user);
+            updateTypingIndicator();
+        }
+    });
+
+    socket.on(Events.StopTyping, (data: { userUuid: string }) => {
+        stateManager.removeTypingUser(data.userUuid);
+        updateTypingIndicator();
+    });
+
+    socket.on(Events.UsersList, (users: User[]) => {
+        console.log('Users in room:', users);
+        updateUsersList(users);
+        // Cache users
+        users.forEach(user => stateManager.get('userCache').set(user.uuid, user));
+    });
+
+    socket.on(Events.UserJoined, (data: { user: User, room: string }) => {
+        addMessage({
+            user_uuid: 'system',
+            room: data.room,
+            content: `${data.user.username} joined the room.`,
+            timestamp: new Date().toISOString(),
+            messageType: 'system'
+        });
+        // Add user to cache
+        stateManager.get('userCache').set(data.user.uuid, data.user);
+    });
+
+    socket.on(Events.UserLeft, (data: { user: User, room: string }) => {
+        addMessage({
+            user_uuid: 'system',
+            room: data.room,
+            content: `${data.user.username} left the room.`,
+            timestamp: new Date().toISOString(),
+            messageType: 'system'
+        });
+        // Optionally remove user from cache if they are not in any other shared rooms
+    });
+
+    socket.on(Events.RoomsList, (rooms: Room[]) => {
+        console.log('Received room list:', rooms);
+        if (roomList) {
+            roomList.innerHTML = ''; // Clear existing rooms
+            rooms.forEach(room => addRoomToList(room.name));
+        }
+    });
+
+    socket.on(Events.RoomCreated, (room: Room) => {
+        console.log('New room created:', room);
+        addRoomToList(room.name);
+    });
+
+    socket.on(Events.UserMention, (data: { from: string; message: string; room: string }) => {
+        showMention(data);
+    });
+}
+// #endregion
+
+// #region Initialization
 if (form && input && messages && roomList) {
     // Mobile menu handlers
     menuToggle?.addEventListener('click', toggleSidebar);
@@ -1173,5 +1243,187 @@ async function handleMentionInput() {
         }
     } else {
         hideMentionDropdown();
+    }
+}
+
+// Initialize the app
+document.addEventListener('DOMContentLoaded', () => {
+    checkAuthStatus().then(() => {
+        init();
+        setupSocketListeners();
+    }).catch(error => {
+        console.error("Initialization failed:", error);
+        window.location.href = '/login.html';
+    });
+});
+
+function init() {
+    // Form and input initialization
+    if (form && input && messages && roomList) {
+        // Mobile menu handlers
+        menuToggle?.addEventListener('click', toggleSidebar);
+        tabletMenuToggle?.addEventListener('click', toggleSidebar);
+        sidebarClose?.addEventListener('click', closeSidebar);
+        sidebarOverlay?.addEventListener('click', closeSidebar);
+
+        // Close sidebar when clicking a room on mobile
+        roomList.addEventListener("click", (e) => {
+            const target = e.target as HTMLElement;
+            if (target && target.matches("button.room-button")) {
+                const newRoom = target.getAttribute("data-room");
+                if (newRoom) switchRoom(newRoom);
+            }
+        });
+
+        // Handle room creation
+        createRoomBtn?.addEventListener("click", createRoom);
+        newRoomInput?.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                createRoom();
+            }
+        });
+
+        form.addEventListener("submit", (e) => {
+            e.preventDefault();
+            if (input.value.trim()) {
+                // Stop typing when sending message
+                clearTimeout(typingTimer);
+                if (state.isTyping) {
+                    state.socket.emit(Events.StopTyping);
+                    state.isTyping = false;
+                }
+
+                // Send the message to the server
+                state.socket.emit(Events.ChatMessage, input.value);
+                input.value = "";
+
+                // Ensure mobile keyboard stays visible
+                input.focus();
+            }
+        });
+
+        // Emit a 'typing' event when the user is typing (with throttling)
+        input.addEventListener("input", () => {
+            // Handle mention autocomplete
+            handleMentionInput().catch(error => console.error('Error handling mention input:', error));
+
+            // Clear existing timer
+            clearTimeout(typingTimer);
+
+            // Only emit if user is actually typing (not just cleared input)
+            if (input.value.trim().length > 0) {
+                // Always emit typing event to refresh server-side timeout
+                console.log("Emitting typing event");
+                state.socket.emit(Events.Typing);
+                state.isTyping = true;
+            } else {
+                // Input is empty, stop typing immediately
+                if (state.isTyping) {
+                    console.log("Emitting stop typing event (empty input)");
+                    state.socket.emit(Events.StopTyping);
+                    state.isTyping = false;
+                }
+            }
+
+            // Reset timer - stop typing after user stops typing
+            typingTimer = window.setTimeout(() => {
+                if (state.isTyping) {
+                    console.log("Typing timeout - emitting stop typing");
+                    state.socket.emit(Events.StopTyping);
+                    state.isTyping = false;
+                }
+            }, TYPING_TIMER_LENGTH);
+        });
+
+        // Handle keyboard navigation for mention dropdown
+        input.addEventListener("keydown", (e) => {
+            // Handle mention navigation
+            if (handleMentionNavigation(e)) {
+                return; // Event was handled by mention system
+            }
+        });
+
+        // Handle mobile-specific input behaviors
+        input.addEventListener("focus", () => {
+            // Scroll to bottom when input is focused on mobile
+            setTimeout(scrollToBottom, 100);
+        });
+
+        // Stop typing when input loses focus
+        input.addEventListener("blur", () => {
+            clearTimeout(typingTimer);
+            if (state.isTyping) {
+                console.log("Input lost focus - stopping typing");
+                state.socket.emit(Events.StopTyping);
+                state.isTyping = false;
+            }
+            // Hide mention dropdown when input loses focus
+            setTimeout(() => {
+                hideMentionDropdown();
+                state.isMentioning = false;
+            }, 200); // Small delay to allow click events on dropdown items
+        });
+
+        // Mention handling
+        input.addEventListener('input', handleInputForMention);
+        input.addEventListener('keydown', (e) => {
+            if (stateManager.get('isMentioning')) {
+                handleMentionNavigation(e);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (mentionDropdown && !mentionDropdown.contains(e.target as Node)) {
+                hideMentionDropdown();
+            }
+        });
+
+        // Initial data fetch
+        fetchInitialData().catch(error => console.error('Failed to fetch initial data:', error));
+    }
+
+    async function fetchInitialData() {
+        // Fetch initial room list
+        try {
+            const response = await fetch('/api/rooms/public');
+            const rooms = await response.json() as Room[];
+            if (roomList) {
+                roomList.innerHTML = '';
+                rooms.forEach(room => addRoomToList(room.name));
+            }
+            // Set the first room as active, or a default
+            const initialRoom = rooms.length > 0 ? rooms[0].name : 'General';
+            switchRoom(initialRoom);
+        } catch (error) {
+            console.error('Failed to fetch initial rooms:', error);
+        }
+
+        // Fetch all users to populate cache and user list
+        await getAllUsers();
+    }
+
+    function handleInputForMention() {
+        if (!input) return;
+
+        const text = input.value;
+        const cursorPos = input.selectionStart;
+
+        if (cursorPos === null) return;
+
+        const atMatch = text.substring(0, cursorPos).match(/@(\w*)$/);
+
+        if (atMatch) {
+            const query = atMatch[1];
+            stateManager.set('isMentioning', true);
+            stateManager.set('mentionQuery', query);
+            stateManager.set('mentionStartPosition', atMatch.index || 0);
+            stateManager.set('selectedMentionIndex', -1);
+
+            fetchUsers(query).then(users => {
+                stateManager.set('mentionUsers', users);
+                showMentionDropdown(users, query);
+            }).catch(error => console.error('Failed to fetch users for mention:', error));
+        } else {
+            hideMentionDropdown();
+        }
     }
 }

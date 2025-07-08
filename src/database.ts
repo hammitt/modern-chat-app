@@ -180,19 +180,6 @@ class ChatDatabase {
         return this.mapUserRowToUser(row);
     }
 
-    async getUserByUsername(username: string): Promise<User | null> {
-        if (!this.db) throw new Error('Database not initialized');
-
-        const row = await this.db.get<UserRowData>(
-            'SELECT * FROM users WHERE username = ?',
-            [username]
-        );
-
-        if (!row) return null;
-
-        return this.mapUserRowToUser(row);
-    }
-
     async getUsersByUuids(uuids: string[]): Promise<User[]> {
         if (!this.db) throw new Error('Database not initialized');
         if (uuids.length === 0) return [];
@@ -293,39 +280,40 @@ class ChatDatabase {
     async getMessages(roomName: string, limit: number = 50, offset: number = 0): Promise<Message[]> {
         if (!this.db) throw new Error('Database not initialized');
 
-        const result = await this.db.all(`
-            SELECT id, user_uuid, room, content, timestamp, message_type, 
-                   file_name, file_url, file_size, edited, edited_at
-            FROM messages 
-            WHERE room = ? 
-            ORDER BY timestamp DESC 
-            LIMIT ? OFFSET ?
-        `, [roomName, limit, offset]);
+        const rows = await this.db.all<MessageRowData[]>(
+            `SELECT m.*, u.username, u.first_name, u.last_name, u.avatar
+             FROM messages m
+             JOIN users u ON m.user_uuid = u.uuid
+             WHERE m.room = ? 
+             ORDER BY m.timestamp DESC 
+             LIMIT ? OFFSET ?`,
+            [roomName, limit, offset]
+        );
 
-        return result.map((row) => this.mapMessageRowToMessage(row as MessageRowData));
+        return rows.map((row) => this.mapMessageRowToMessage(row));
     }
 
     async searchMessages(query: string, roomName?: string, limit: number = 50): Promise<Message[]> {
         if (!this.db) throw new Error('Database not initialized');
 
         let sql = `
-            SELECT id, user_uuid, room, content, timestamp, message_type, 
-                   file_name, file_url, file_size, edited, edited_at
-            FROM messages 
-            WHERE content LIKE ?
+            SELECT m.*, u.username, u.first_name, u.last_name, u.avatar
+            FROM messages m
+            JOIN users u ON m.user_uuid = u.uuid
+            WHERE m.content LIKE ?
         `;
         const params: (string | number)[] = [`%${query}%`];
 
         if (roomName) {
-            sql += ' AND room = ?';
+            sql += ' AND m.room = ?';
             params.push(roomName);
         }
 
-        sql += ' ORDER BY timestamp DESC LIMIT ?';
+        sql += ' ORDER BY m.timestamp DESC LIMIT ?';
         params.push(limit);
 
-        const result = await this.db.all(sql, params);
-        return result.map((row) => this.mapMessageRowToMessage(row as MessageRowData));
+        const rows = await this.db.all<MessageRowData[]>(sql, params);
+        return rows.map((row) => this.mapMessageRowToMessage(row));
     }
 
     async searchUsers(query: string, limit: number = 50): Promise<User[]> {
